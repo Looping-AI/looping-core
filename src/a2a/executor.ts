@@ -1,0 +1,171 @@
+import {
+  AgentEvent,
+  type AgentExecutor,
+  type ExecutionEventBus,
+  type RequestContext
+} from "@a2a-js/sdk/server";
+import type { Task } from "@a2a-js/sdk";
+import type { GatewayIdentity } from "./verify.js";
+import type { AgentResolver } from "./agent-stub.js";
+import { textOf } from "./parts.js";
+
+/**
+ * Derive a deterministic workflow instance id for a turn. Keyed on the gateway's
+ * `messageId` (stable across dispatch retries), so re-creating it is a no-op —
+ * the turn runs exactly once. Sanitized to the id charset.
+ */
+export function workflowIdForMessage(
+  messageId: string,
+  prefix = "turn"
+): string {
+  return `${prefix}-${messageId.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+}
+
+/**
+ * Everything the executor knows about an accepted turn, handed to the
+ * consumer's {@link TurnStarter}.
+ *
+ * Core stops here deliberately: which workflow runs the turn, what else its
+ * params carry, and which binding it is created on are all the agent's, so core
+ * describes the turn and the agent starts it.
+ */
+export interface AcceptedTurn {
+  /** The gateway's message id — the idempotency key for the whole turn. */
+  messageId: string;
+  taskId: string;
+  contextId: string;
+  /** The caller's message, flattened to text. */
+  text: string;
+  identity: GatewayIdentity;
+  /** Webhook the terminal task is POSTed to. */
+  pushUrl: string;
+  /** Per-task validation token echoed on the callback. */
+  pushToken: string;
+  /** This agent's card-signing JWKS URL — the callback JWT `jku`. */
+  jku: string;
+}
+
+/**
+ * Start the durable turn. **Must be idempotent**: a dispatch retry calls it
+ * again with the same {@link AcceptedTurn.messageId}, and the conventional
+ * implementation swallows the workflow's "instance already exists" race — see
+ * {@link workflowIdForMessage} and {@link ignoreAlreadyExists}.
+ */
+export type TurnStarter = (turn: AcceptedTurn) => Promise<void>;
+
+export interface ExecutorConfig {
+  identity: GatewayIdentity;
+  /** This agent's card-signing JWKS URL — the callback JWT `jku`. */
+  jku: string;
+  resolveAgent: AgentResolver;
+  startTurn: TurnStarter;
+}
+
+/**
+ * Run `create` and swallow the "instance already exists" retry race, so a
+ * {@link TurnStarter} is idempotent in the one way that actually happens.
+ *
+ * ```ts
+ * startTurn: (turn) =>
+ *   ignoreAlreadyExists(() =>
+ *     env.HANDLE_TASK_WORKFLOW.create({
+ *       id: workflowIdForMessage(turn.messageId),
+ *       params: { ...turn }
+ *     })
+ *   )
+ * ```
+ */
+export async function ignoreAlreadyExists(
+  create: () => Promise<unknown>
+): Promise<void> {
+  try {
+    await create();
+  } catch (err) {
+    if (err instanceof Error && /already exists|exist/i.test(err.message)) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * A2A executor for the **async accept + notify** contract. On `SendMessage` it
+ * does not block on generation: it records a `submitted` task in the caller's DO
+ * (idempotent on `messageId`), hands the turn to a durable workflow, and
+ * publishes the accepted task immediately as the response. The workflow
+ * generates the reply and POSTs it to the gateway's push-notification webhook
+ * out of band.
+ *
+ * The verified caller identity comes from the config — the outer Worker builds
+ * one executor per verified request. The push config comes from the request
+ * itself: v1.0 hands the executor the whole `SendMessageRequest` via
+ * {@link RequestContext.request}, so nothing has to be threaded around it.
+ */
+export class A2AExecutor implements AgentExecutor {
+  constructor(private readonly config: ExecutorConfig) {}
+
+  execute = async (
+    requestContext: RequestContext,
+    eventBus: ExecutionEventBus
+  ): Promise<void> => {
+    const pushConfig =
+      requestContext.request.configuration?.taskPushNotificationConfig;
+    // Defensive: the Worker validates url + token before the executor runs, and
+    // must keep doing so — a throw here is turned into a `failed` task by the
+    // request handler, not into the JSON-RPC error the caller needs to see.
+    if (!pushConfig?.url || !pushConfig.token) {
+      throw new Error("taskPushNotificationConfig url and token are required");
+    }
+
+    const text = textOf(requestContext.userMessage);
+    const messageId = requestContext.userMessage.messageId;
+    const contextId = requestContext.contextId;
+
+    // `identity.key` is guaranteed non-null: the Worker rejects a keyless
+    // identity (400) before constructing this executor.
+    const stub = this.config.resolveAgent(this.config.identity);
+
+    // Record (or reuse) the submitted task, then start the durable turn. Both
+    // are idempotent, so a dispatch retry heals a crash between the two.
+    const accepted = await stub.beginTask({
+      messageId,
+      taskId: requestContext.taskId,
+      contextId
+    });
+    // Widened in one explicit step: DO-stub returns come back through
+    // Cloudflare's RPC type mapping, and letting that mapped type flow into a
+    // generic SDK call site instead exceeds TypeScript's instantiation depth on
+    // the v1.0 (proto-generated) model.
+    const task: Task = accepted;
+
+    await this.config.startTurn({
+      messageId,
+      taskId: accepted.id,
+      contextId,
+      text,
+      identity: this.config.identity,
+      pushUrl: pushConfig.url,
+      pushToken: pushConfig.token,
+      jku: this.config.jku
+    });
+
+    // The accept ack: a `submitted` task, not a Message. Returned synchronously.
+    eventBus.publish(AgentEvent.task(task));
+    eventBus.finished();
+  };
+
+  /**
+   * `CancelTask`: best-effort mark the task canceled in the DO and publish the
+   * canceled task. The in-flight workflow's `notify` step skips a canceled task.
+   */
+  cancelTask = async (
+    taskId: string,
+    eventBus: ExecutionEventBus
+  ): Promise<void> => {
+    const task = await this.config
+      .resolveAgent(this.config.identity)
+      .cancelTask(taskId);
+    if (task) eventBus.publish(AgentEvent.task(task));
+    eventBus.finished();
+  };
+}

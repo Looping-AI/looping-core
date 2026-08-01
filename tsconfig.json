@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    // Deliberately NOT wrangler's generated `worker-configuration.d.ts`: a
+    // published package cannot reference a consumer's ambient `Env`. Core
+    // declares its own env slices in `src/env.ts`, so a stray `Env` reference
+    // fails typecheck here rather than at a consumer's build.
+    // `@cloudflare/vitest-pool-workers/types` is here for `src/testing/*`, which
+    // imports `cloudflare:test`. That subpath is only ever loaded from a test
+    // run, and a consumer of `@looping/core/testing` has the pool installed by
+    // definition — nothing in the runtime graph reaches it.
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types",
+      "node"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true
+  },
+  "include": ["src/**/*.ts"]
+}

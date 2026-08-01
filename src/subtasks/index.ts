@@ -1,0 +1,35 @@
+/**
+ * `@looping/core/subtasks` — the delegation layer: what a round may hand out,
+ * how a proposal becomes durable drafts, and which of them may run next.
+ */
+
+export {
+  makeSubtaskTypes,
+  SubtaskParamsError,
+  type SubtaskTypeRegistry
+} from "./subtask-types.js";
+
+export {
+  DecompositionValidationError,
+  makeDecompositionProposalSchema,
+  nonBlank,
+  resolveDecomposition
+} from "./decomposition.js";
+
+export {
+  DELEGATE_TOOL_NAME,
+  makeDelegateTool,
+  delegateToolCallId,
+  delegateCallInput,
+  delegateCallOutput,
+  type DelegateSubtaskOutcome
+} from "./delegate.js";
+
+export { selectWave, type WaveDecision } from "./scheduler.js";
+
+export {
+  isCatalogEligible,
+  type ReferenceCatalogEntry
+} from "./catalog.js";
+
+export * from "./types.js";

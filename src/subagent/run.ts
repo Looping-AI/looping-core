@@ -1,0 +1,665 @@
+import type {
+  LanguageModel,
+  ModelMessage,
+  StepResult,
+  ToolResultPart,
+  ToolSet
+} from "ai";
+import { generateText, isStepCount } from "ai";
+import { CHUNK_SOFT_MS } from "../platform.js";
+import { stepAllowance } from "../agent/budget.js";
+import { isTransientAiError } from "../agent/inference.js";
+import {
+  validateRecipe,
+  type RecipePolicy
+} from "../contract/validation.js";
+import type { ModelPair } from "../agent/model.js";
+import type {
+  ProgressEvent,
+  RecipeChunkResult,
+  RecipeExecutionRequest,
+  RecipeExecutionResult
+} from "../subtasks/types.js";
+import type { RecipeLimits } from "../contract/recipe.js";
+import { renderSubagentPrompt } from "./prompt.js";
+
+/**
+ * The resumable execution runner — ONE loop for every Recipe, from a single-shot
+ * general Subtask to a long game. It runs the model/tool loop in durable
+ * **chunks**: each call advances as far as `chunkSoftMs` allows (or until the run
+ * spends its budget, or until a tool emits progress), checkpoints its rolling state
+ * after every turn, and returns either a terminal result or a "not done" yield. The
+ * facet persists the state between chunks and the Workflow runs each chunk as its
+ * own durable, retryable step — so no single step ever approaches the platform
+ * step timeout, and a crash loses at most the in-flight turn.
+ *
+ * Domain behavior lives entirely in the tool families; this runner is agnostic of
+ * what work happens beneath it. State that must outlive the small rolling context
+ * window is the recipe's responsibility to persist to its workspace.
+ */
+
+/** The rolling state carried across a run's chunks (persisted by the facet). */
+export interface ChunkRunState {
+  /** Windowed conversation so far (system is supplied separately, not stored here). */
+  messages: ModelMessage[];
+  /** Total model turns (tool-loop steps) across every chunk — bounds `maxTurns`. */
+  turns: number;
+  /** Total `generateText` invocations (including fallbacks and summarization). */
+  llmCalls: number;
+  /** Wall-clock start of the whole execution (for the metrics footer). */
+  startedAtMs: number;
+}
+
+/** Everything one chunk needs, assembled by the facet (or a test) each call. */
+export interface ChunkRunDeps {
+  system: string;
+  /** The rendered initial user message; seeds a fresh run's first chunk. */
+  seedPrompt: string;
+  models: ModelPair;
+  tools: ToolSet;
+  /** The run's budget: turns and wall clock. Nothing else. */
+  limits: RecipeLimits;
+  /**
+   * How long this chunk may run before it checkpoints and yields a fresh durable
+   * step — the Workers step-timeout guard, not a budget, and identical for every
+   * Recipe (`CHUNK_SOFT_MS` in `platform.ts`). Injected rather than imported so
+   * the runner stays testable with a fake clock.
+   */
+  chunkSoftMs: number;
+  historyWindow: number;
+  /**
+   * How many of the most recent assistant turns keep their tool results in full;
+   * older ones are stubbed by {@link elideToolOutputs}. A mechanic of the window
+   * rather than a property of a domain — see `TOOL_OUTPUT_WINDOW` in `config.ts`.
+   */
+  toolOutputWindow: number;
+  reportMetrics: boolean;
+  /**
+   * Output-token ceiling for every model call in this chunk. Injected rather
+   * than imported: it is host config, and a published runner must not carry a
+   * hardcoded one.
+   */
+  maxOutputTokens: number;
+  now: () => number;
+  /** Shared sink the tool families push progress events into (fresh per chunk). */
+  progress: ProgressEvent[];
+  /** Persist rolling state after every model turn — the crash-safety checkpoint. */
+  checkpoint: (state: ChunkRunState) => void | Promise<void>;
+  /**
+   * Interrupts the in-flight model call when the parent Task is canceled. Without
+   * it a cancellation is only observed at the next chunk boundary — up to
+   * `chunkSoftMs` of unwanted play. See {@link ChunkAttempt}'s `aborted` case for
+   * why an abort is emphatically *not* a model failure.
+   */
+  abortSignal?: AbortSignal;
+}
+
+export interface ChunkRunOutput {
+  outcome: RecipeChunkResult;
+  state: ChunkRunState;
+}
+
+/**
+ * `aborted` is deliberately distinct from `failed`. A rejected `generateText`
+ * normally means "this model is unusable, try the other one" and, if both go,
+ * becomes a **cached terminal failure**. An abort means neither: the work was
+ * interrupted on purpose, a second model would only burn another call, and
+ * caching the outcome would replay a bogus failure on every future retry. It
+ * therefore yields — same rule the runner already applies to transient faults,
+ * which throw and cache nothing.
+ */
+type ChunkAttempt =
+  | { kind: "completed"; text: string; modelId: string }
+  | { kind: "yield" }
+  | { kind: "aborted" }
+  | { kind: "failed"; diagnostic: string; error?: unknown; modelId: string };
+
+/**
+ * Trim the conversation to the most recent `window` turns (plus the seed message),
+ * cutting at an assistant boundary so no tool-result message is left orphaned.
+ * Older turns fall out of context — the recipe's soul directs the model to persist
+ * anything durable to its workspace, which the window never touches.
+ */
+export function windowMessages(
+  messages: ModelMessage[],
+  window: number
+): ModelMessage[] {
+  if (messages.length <= 1) return messages;
+  const assistantIdx: number[] = [];
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === "assistant") assistantIdx.push(i);
+  }
+  if (assistantIdx.length <= window) return messages;
+  const start = assistantIdx[assistantIdx.length - window];
+  return [messages[0], ...messages.slice(start)];
+}
+
+/** What replaces a tool result that has aged out of the detail window. */
+export const ELIDED_TOOL_OUTPUT =
+  "[output from an earlier turn, trimmed to save context]";
+
+/**
+ * Below this many serialized characters a result is not worth stubbing — the
+ * stub would be most of what it replaced.
+ */
+const MIN_ELIDABLE_OUTPUT = 200;
+
+/** Serialized size of a tool result's output, for the "worth stubbing" test. */
+function outputSize(output: ToolResultPart["output"]): number {
+  if (output.type === "text" || output.type === "error-text")
+    return output.value.length;
+  if (output.type === "execution-denied") return (output.reason ?? "").length;
+  try {
+    return JSON.stringify(output.value).length;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/**
+ * Shrink the window without shortening it: stub out the *payloads* of tool
+ * results the model has moved past, leaving every message, every tool call — and
+ * therefore every note the model wrote itself — exactly where it was.
+ *
+ * This is the other half of {@link windowMessages}, and it exists because the two
+ * things a rolling window holds have opposite value curves. A recipe's own
+ * reasoning and its tool-call *inputs* stay useful for as long as the run does; a
+ * tool *result* is a snapshot of a world that has since moved, and it is also
+ * where nearly all the tokens are. Dropping whole turns to bound context throws
+ * both away together, which is why a short window makes a model re-derive what it
+ * already knew.
+ *
+ * A result's output survives if any of:
+ *
+ * 1. it is within the last `keepRecent` assistant messages — the same unit
+ *    `windowMessages` counts in, so the two knobs are commensurable;
+ * 2. **it is the newest result for its tool**, at any age. Tools may hold state
+ *    about what they have already shown this chunk and answer a repeat with
+ *    "unchanged since you last looked" — a real optimization that becomes a lie
+ *    the moment the render it points at is gone. Keeping the newest per tool is
+ *    what makes "your latest view" a thing the model can still see, and it is why
+ *    `keepRecent` can be small;
+ * 3. it reports a failure or a denial — short, diagnostic, and losing *why* a
+ *    call failed costs a retry to rediscover for no saving;
+ * 4. it is already small enough that stubbing it saves nothing.
+ *
+ * Idempotent: a stubbed part is small, so a later pass leaves it alone.
+ *
+ * `keepRecent` is normalized rather than trusted — see the note on `keep` below.
+ * Zero is a legal, meaningful value: no turn is recent, so rule 1 protects
+ * nothing and rules 2-4 carry the whole of what survives.
+ */
+export function elideToolOutputs(
+  messages: ModelMessage[],
+  keepRecent: number
+): ModelMessage[] {
+  /**
+   * Rule 1's width, normalized to a non-negative integer.
+   *
+   * Not defensive habit: `keepRecent` is a config value reaching a function whose
+   * arithmetic indexes an array with it, and every out-of-contract value used to
+   * land on the *same* wrong branch. `assistantIdx[len - 0]` is `undefined`, as is
+   * any negative or `NaN` index, and `i >= undefined` is false for every `i` — so
+   * `cutoff` silently meant "no turn is recent" instead of throwing or clamping.
+   * That happens to be right for 0 and wrong for everything else, which is the
+   * worst way for a guard to fail: correct until the day someone passes -1.
+   *
+   * So 0 now says it explicitly (see `cutoff`), and nothing else can reach it by
+   * accident. `NaN` is the one value with no reading at all, and it takes the
+   * conservative floor — still bounded by rules 2-4, which keep the newest result
+   * per tool, every failure, and everything already small. Both infinities keep
+   * the reading they plainly have: an unboundedly wide window keeps everything, a
+   * negative one keeps nothing.
+   */
+  const keep = Number.isNaN(keepRecent)
+    ? 0
+    : Math.max(0, Math.trunc(keepRecent));
+
+  // Where the detail window starts, counted in assistant messages so it lines up
+  // with `historyWindow`. Everything before it is a candidate for elision, so
+  // `messages.length` is the honest spelling of an empty window and 0 the honest
+  // spelling of a window covering everything (fewer assistant messages than the
+  // window ⇒ keep all).
+  const assistantIdx: number[] = [];
+  for (const [i, m] of messages.entries()) {
+    if (m.role === "assistant") assistantIdx.push(i);
+  }
+  const cutoff =
+    keep === 0
+      ? messages.length
+      : assistantIdx.length <= keep
+        ? 0
+        : assistantIdx[assistantIdx.length - keep];
+  if (cutoff === 0) return messages;
+
+  // The newest result per tool, so rule 2 can be a lookup rather than a scan.
+  const newestPerTool = new Map<string, number>();
+  for (const [i, message] of messages.entries()) {
+    if (message.role !== "tool") continue;
+    for (const part of message.content) {
+      if (part.type === "tool-result") newestPerTool.set(part.toolName, i);
+    }
+  }
+
+  let changed = false;
+  const out = messages.map((message, i) => {
+    if (message.role !== "tool" || i >= cutoff) return message;
+    let messageChanged = false;
+    const content = message.content.map((part) => {
+      if (part.type !== "tool-result") return part;
+      if (newestPerTool.get(part.toolName) === i) return part;
+      if (
+        part.output.type === "error-text" ||
+        part.output.type === "error-json" ||
+        part.output.type === "execution-denied"
+      )
+        return part;
+      if (outputSize(part.output) < MIN_ELIDABLE_OUTPUT) return part;
+      messageChanged = true;
+      return {
+        ...part,
+        output: { type: "text" as const, value: ELIDED_TOOL_OUTPUT }
+      };
+    });
+    if (!messageChanged) return message;
+    changed = true;
+    return { ...message, content };
+  });
+  return changed ? out : messages;
+}
+
+/** Human-readable elapsed time for the metrics footer. */
+function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function metricsFooter(state: ChunkRunState, now: number): string {
+  return (
+    `\n\n---\nRan ${state.turns} model turn(s) across ${state.llmCalls} model ` +
+    `call(s) in ${formatDuration(now - state.startedAtMs)}.`
+  );
+}
+
+/**
+ * Has this execution spent its whole-run budget? Turns and wall-clock are one
+ * predicate because they mean the same thing to the runner — the run is over and
+ * owes a report — and because checking only turns is what let a slow-turning
+ * recipe run for hours while its turn counter looked healthy.
+ *
+ * `startedAtMs` rides in the checkpoint, so the deadline survives chunk
+ * boundaries, step retries and isolate restarts without any storage of its own.
+ */
+function budgetSpent(state: ChunkRunState, deps: ChunkRunDeps): boolean {
+  return (
+    state.turns >= deps.limits.maxTurns ||
+    deps.now() - state.startedAtMs >= deps.limits.maxWallMs
+  );
+}
+
+function completed(
+  state: ChunkRunState,
+  deps: ChunkRunDeps,
+  text: string,
+  modelId: string
+): ChunkRunOutput {
+  const finalText = deps.reportMetrics
+    ? text + metricsFooter(state, deps.now())
+    : text;
+  return {
+    outcome: {
+      done: true,
+      result: {
+        status: "completed",
+        resultParts: [{ kind: "text", text: finalText }],
+        modelId
+      },
+      progress: deps.progress
+    },
+    state
+  };
+}
+
+/**
+ * Run one durable chunk. Returns a terminal result (natural completion, budget
+ * exhaustion, or exhausted models) or a `done: false` yield with the progress
+ * emitted this chunk. Throws only on a transient platform fault, so the Workflow
+ * step retries and resumes from the last checkpoint.
+ */
+export async function runResumableChunk(
+  prev: ChunkRunState | null,
+  deps: ChunkRunDeps
+): Promise<ChunkRunOutput> {
+  const state: ChunkRunState = prev ?? {
+    messages: [{ role: "user", content: deps.seedPrompt }],
+    turns: 0,
+    llmCalls: 0,
+    startedAtMs: deps.now()
+  };
+
+  /**
+   * Hand the chunk back with no terminal result. An abort takes this exit too —
+   * that is the whole point: nothing terminal is produced, so the facet caches
+   * nothing and no bogus failure can replay on a later retry.
+   */
+  const yielded = (): ChunkRunOutput => ({
+    outcome: { done: false, progress: deps.progress },
+    state
+  });
+
+  // Already canceled before this chunk started: don't call a model at all.
+  if (deps.abortSignal?.aborted) return yielded();
+
+  // The durable enforcement point for the whole-run budget: it reads persisted
+  // state before any model call, so every chunk re-checks it however the previous
+  // one ended. It also covers the retry that resumes from a checkpoint taken on
+  // the final allowed turn before the chunk returned — e.g. summarizeBudget's own
+  // call threw a transient fault and the Workflow step retried. The budget is
+  // already spent, so summarize now instead of running another unbudgeted,
+  // side-effecting turn (which `stopWhen`'s `Math.max(1, …)` would otherwise force).
+  if (budgetSpent(state, deps)) {
+    return summarizeBudget(state, deps);
+  }
+
+  const chunkStartMs = deps.now();
+
+  const onStepEnd = async (step: StepResult<ToolSet>): Promise<void> => {
+    state.turns += 1;
+    // Window first (drops whole turns at an assistant boundary), then elide what
+    // survived. Both before the checkpoint, so the durable `run_state` row
+    // shrinks with the context rather than tracking the untrimmed run.
+    state.messages = elideToolOutputs(
+      windowMessages(
+        [...state.messages, ...step.response.messages],
+        deps.historyWindow
+      ),
+      deps.toolOutputWindow
+    );
+    await deps.checkpoint(state);
+  };
+
+  /**
+   * Four boundaries, and only the first two are budgets. A chunk ends on
+   * whichever comes first; the run ends only on a budget.
+   *
+   * Rebuilt per attempt rather than once per chunk, and that is the whole point:
+   * `isStepCount` counts within one `generateText` call, so a `stopWhen` shared
+   * with the fallback would hand it the turn allowance the primary already spent.
+   * `onStepEnd` has moved `state.turns` by then, so recomputing here charges the
+   * fallback for what the run has actually used.
+   */
+  const boundaries = () => [
+    // The turn budget — all of what is left of it. There is deliberately no
+    // per-chunk turn allowance: a turn count cannot bound a step's *duration*,
+    // which is the only thing the step timeout cares about, so the wall-clock
+    // predicate below owns that job alone.
+    isStepCount(stepAllowance(deps.limits.maxTurns, state.turns)),
+    // The run-wide deadline. Without it the entry guard would only observe the
+    // deadline at the next chunk boundary, up to `chunkSoftMs` past it.
+    () => deps.now() - state.startedAtMs >= deps.limits.maxWallMs,
+    // Not a budget: the platform's step timeout, which needs this chunk to
+    // checkpoint and hand back a fresh step long before ~10 minutes.
+    () => deps.now() - chunkStartMs >= deps.chunkSoftMs,
+    // Not a budget either: publish progress to the user promptly.
+    () => deps.progress.length > 0
+  ];
+
+  const attempt = async (
+    model: () => LanguageModel,
+    modelId: string
+  ): Promise<ChunkAttempt> => {
+    state.llmCalls += 1;
+    let result: Awaited<ReturnType<typeof generateText>>;
+    try {
+      result = await generateText({
+        model: model(),
+        instructions: deps.system,
+        messages: state.messages,
+        tools: deps.tools,
+        stopWhen: boundaries(),
+        maxOutputTokens: deps.maxOutputTokens,
+        // Primary → fallback recovery is manual; SDK backoff would only add latency.
+        maxRetries: 0,
+        abortSignal: deps.abortSignal,
+        onStepEnd
+      });
+    } catch (error) {
+      // Check the signal before the error: an abort surfaces as a rejection, and
+      // reading it as bad model output would spend the fallback and cache a
+      // failure for work that was cancelled on purpose.
+      if (deps.abortSignal?.aborted) return { kind: "aborted" };
+      return { kind: "failed", diagnostic: String(error), error, modelId };
+    }
+    if (deps.abortSignal?.aborted) return { kind: "aborted" };
+    if (result.finishReason === "length") {
+      // Its own warning, not just a diagnostic string: hitting the output ceiling
+      // is a tuning signal about MAX_OUTPUT_TOKENS, distinct from the model
+      // producing bad output, and the two are indistinguishable once folded into
+      // the "recipe exhausted" message.
+      console.warn("[recipe-runner] model output truncated", {
+        model: modelId,
+        maxOutputTokens: deps.maxOutputTokens
+      });
+      return {
+        kind: "failed",
+        diagnostic: "truncated (finish_reason=length)",
+        modelId
+      };
+    }
+    if (result.finishReason === "stop") {
+      const text = result.text.trim();
+      return text === ""
+        ? { kind: "failed", diagnostic: "empty final reply", modelId }
+        : { kind: "completed", text, modelId };
+    }
+    // Not a final answer (e.g. finish_reason=tool-calls): a stop condition fired
+    // mid-loop — the chunk yielded a durable boundary with more work to do.
+    return { kind: "yield" };
+  };
+
+  let a = await attempt(deps.models.primary, deps.models.primaryId());
+  if (a.kind === "aborted") return yielded();
+  if (a.kind === "failed") {
+    console.warn("[recipe-runner] primary attempt failed, trying fallback", {
+      model: a.modelId,
+      diagnostic: a.diagnostic
+    });
+    const primaryFailure = a;
+    a = await attempt(deps.models.fallback, deps.models.fallbackId());
+    if (a.kind === "aborted") return yielded();
+
+    if (a.kind === "failed") {
+      // Both attempts failed. A transient fault anywhere means a retry could
+      // succeed — throw it for the Workflow step (most recent first).
+      for (const failed of [a, primaryFailure]) {
+        if (failed.error !== undefined && isTransientAiError(failed.error)) {
+          throw failed.error;
+        }
+      }
+      return {
+        outcome: {
+          done: true,
+          result: {
+            status: "failed",
+            error:
+              `recipe exhausted: primary (${primaryFailure.modelId}): ` +
+              `${primaryFailure.diagnostic}; fallback (${a.modelId}): ${a.diagnostic}`,
+            modelId: a.modelId
+          },
+          progress: deps.progress
+        },
+        state
+      };
+    }
+  }
+
+  if (a.kind === "completed") return completed(state, deps, a.text, a.modelId);
+
+  // The chunk yielded. If the run budget is spent, force a final summary so the
+  // run still returns useful output; otherwise ask the Workflow for another chunk.
+  if (budgetSpent(state, deps)) {
+    return summarizeBudget(state, deps);
+  }
+  return yielded();
+}
+
+/**
+ * The run budget — turns or wall-clock — is exhausted mid-loop: run one final
+ * no-tools call asking the model to produce its answer/report from the work so
+ * far. Primary → fallback, same transient/deterministic split. This is what makes
+ * "uncapped but bounded" safe — the ceiling yields a report instead of a dropped
+ * run.
+ *
+ * The message deliberately does not name *which* budget ran out. The model can
+ * do nothing differently either way, and the one instruction that matters —
+ * report now, take no more actions — is the same.
+ */
+async function summarizeBudget(
+  state: ChunkRunState,
+  deps: ChunkRunDeps
+): Promise<ChunkRunOutput> {
+  const messages: ModelMessage[] = [
+    ...state.messages,
+    {
+      role: "user",
+      content:
+        "You have reached your execution budget and can take no more actions. " +
+        "Write your final answer or report now, based on the work so far."
+    }
+  ];
+
+  const summarize = async (
+    model: () => LanguageModel,
+    modelId: string
+  ): Promise<ChunkAttempt> => {
+    state.llmCalls += 1;
+    let result: Awaited<ReturnType<typeof generateText>>;
+    try {
+      result = await generateText({
+        model: model(),
+        instructions: deps.system,
+        messages,
+        stopWhen: isStepCount(1),
+        maxOutputTokens: deps.maxOutputTokens,
+        maxRetries: 0,
+        abortSignal: deps.abortSignal
+      });
+    } catch (error) {
+      if (deps.abortSignal?.aborted) return { kind: "aborted" };
+      return { kind: "failed", diagnostic: String(error), error, modelId };
+    }
+    if (deps.abortSignal?.aborted) return { kind: "aborted" };
+    const text = result.text.trim();
+    return text === ""
+      ? { kind: "failed", diagnostic: "empty summary", modelId }
+      : { kind: "completed", text, modelId };
+  };
+
+  // An abort yields with no terminal result, exactly as in the main loop: the
+  // budget summary is output, and cancelled work publishes none.
+  const yielded = (): ChunkRunOutput => ({
+    outcome: { done: false, progress: deps.progress },
+    state
+  });
+
+  let a = await summarize(deps.models.primary, deps.models.primaryId());
+  if (a.kind === "aborted") return yielded();
+  if (a.kind === "failed") {
+    const primaryFailure = a;
+    a = await summarize(deps.models.fallback, deps.models.fallbackId());
+    if (a.kind === "aborted") return yielded();
+    if (a.kind === "failed") {
+      for (const failed of [a, primaryFailure]) {
+        if (failed.error !== undefined && isTransientAiError(failed.error)) {
+          throw failed.error;
+        }
+      }
+      // Even the summary failed: return a plain budget-exhausted notice.
+      const text =
+        "Reached the execution budget without producing a final report.";
+      return completed(state, deps, text, a.modelId);
+    }
+  }
+  return a.kind === "completed"
+    ? completed(state, deps, a.text, a.modelId)
+    : completed(
+        state,
+        deps,
+        "Reached the execution budget.",
+        deps.models.fallbackId()
+      );
+}
+
+/** Everything a whole-run (non-chunked) execution needs — for tests and callers
+ * that want a single terminal result rather than driving chunks themselves. */
+export interface RecipeRunDeps {
+  models: ModelPair;
+  tools: ToolSet;
+  now?: () => number;
+  /** The capability boundary a recipe is re-validated against inside the child. */
+  policy: RecipePolicy;
+  /** `CoreConfig.toolOutputWindow`. */
+  toolOutputWindow: number;
+  /** `CoreConfig.model.maxOutputTokens`. */
+  maxOutputTokens: number;
+}
+
+/**
+ * Run one recipe execution to a terminal result, driving {@link runResumableChunk}
+ * chunk by chunk in memory. A run that fits its budget finishes in one chunk;
+ * otherwise it loops until the budget yields a summary. Used by tests and any
+ * caller wanting the whole outcome; the facet drives chunks durably instead, for
+ * crash-safety across the Workflow.
+ *
+ * Throws only on a transient platform fault (as {@link runResumableChunk} does).
+ */
+export async function runRecipeExecution(
+  request: RecipeExecutionRequest,
+  deps: RecipeRunDeps
+): Promise<RecipeExecutionResult> {
+  if (request.prompt.trim() === "") {
+    return { status: "failed", error: "empty subtask prompt", modelId: null };
+  }
+
+  const recipe = validateRecipe(request.recipe, deps.policy);
+  const { system, prompt } = renderSubagentPrompt({ ...request, recipe });
+  const now = deps.now ?? Date.now;
+
+  let state: ChunkRunState | null = null;
+  // A chunk always advances ≥1 turn unless it completes, so `maxTurns` chunks is
+  // the ceiling and this can never spin. Turn-derived on purpose: `maxWallMs` and
+  // `chunkSoftMs` only ever end a run *sooner*, so neither can loosen the bound.
+  const maxChunks = recipe.limits.maxTurns + 2;
+
+  for (let chunk = 0; chunk < maxChunks; chunk++) {
+    const chunkDeps: ChunkRunDeps = {
+      system,
+      seedPrompt: prompt,
+      models: deps.models,
+      tools: deps.tools,
+      limits: recipe.limits,
+      chunkSoftMs: CHUNK_SOFT_MS,
+      historyWindow: recipe.historyWindow,
+      toolOutputWindow: deps.toolOutputWindow,
+      reportMetrics: recipe.reportMetrics,
+      maxOutputTokens: deps.maxOutputTokens,
+      now,
+      progress: [],
+      checkpoint: () => {}
+    };
+    const { outcome, state: next } = await runResumableChunk(state, chunkDeps);
+    if (outcome.done) return outcome.result;
+    state = next;
+  }
+
+  return {
+    status: "failed",
+    error: `recipe did not terminate within ${maxChunks} chunks`,
+    modelId: null
+  };
+}
