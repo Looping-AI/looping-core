@@ -1,7 +1,7 @@
 /**
- * `@looping/core/testing/node` — the **Node-realm** half of the VCR harness.
+ * `@loopingai/core/testing/node` — the **Node-realm** half of the VCR harness.
  *
- * Separate from `@looping/core/testing` because the two halves cannot share a
+ * Separate from `@loopingai/core/testing` because the two halves cannot share a
  * module graph. This side imports `undici` and `node:fs`; the other side runs
  * inside workerd, which has neither. `vcr-shared.ts` is the only thing both may
  * touch, and it is deliberately dependency-free so it can load in either realm.
@@ -11,12 +11,12 @@
  *
  * ```ts
  * // vitest.config.ts
- * import { createVcrAgent } from "@looping/core/testing/node";
+ * import { createVcrAgent } from "@loopingai/core/testing/node";
  * ```
  *
  * For the common case — wiring cassette flush/teardown — you do not need this
  * subpath at all. Point `globalSetup` at
- * `@looping/core/testing/vcr-global-setup`, which is this module's `setup`/
+ * `@loopingai/core/testing/vcr-global-setup`, which is this module's `setup`/
  * `teardown` pair already packaged for Vitest.
  */
 

@@ -1,5 +1,5 @@
 /**
- * `@looping/core` — the mandatory foundation for a Looping agent.
+ * `@loopingai/core` — the mandatory foundation for a Looping agent.
  *
  * This root entry carries only what nearly every consumer touches: the plugin
  * contract, the config shape, the runtime factory, and the platform facts.

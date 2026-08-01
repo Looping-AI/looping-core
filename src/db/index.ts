@@ -1,5 +1,5 @@
 /**
- * `@looping/core/db` — the two tables core owns, and the seam a plugin uses to
+ * `@loopingai/core/db` — the two tables core owns, and the seam a plugin uses to
  * own its own without touching core's migration journal.
  */
 

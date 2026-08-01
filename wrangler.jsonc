@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
 
-  // Dev-only. `@looping/core` is a library and never deploys — this config
+  // Dev-only. `@loopingai/core` is a library and never deploys — this config
   // exists so `@cloudflare/vitest-pool-workers` has a Worker to bind, and so
   // `wrangler types` can generate the ambient `Cloudflare.Env` that
   // `test/worker.ts` types itself against. It is excluded from the published

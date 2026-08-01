@@ -1,4 +1,4 @@
-# AGENTS.md — working in `@looping/core`
+# AGENTS.md — working in `@loopingai/core`
 
 This package is the mandatory floor under every Looping agent. It is consumed by
 [`looping-plugins`](https://github.com/Looping-AI/looping-plugins) (optional,
@@ -55,8 +55,8 @@ follow from that, and all three have already been violated once:
   typechecks extensionless specifiers, but `tsc` emits them verbatim and Node ESM
   then throws `ERR_MODULE_NOT_FOUND` at the consumer.
 
-- **Never mix realms in one module graph.** `@looping/core/testing` is the
-  workerd half (may reach `cloudflare:test`); `@looping/core/testing/node` and
+- **Never mix realms in one module graph.** `@loopingai/core/testing` is the
+  workerd half (may reach `cloudflare:test`); `@loopingai/core/testing/node` and
   `/testing/vcr-global-setup` are the Node half (may reach `undici`, `node:fs`).
   `src/testing/vcr-shared.ts` is the only module both may load, and it must stay
   dependency-free. **No runtime subpath may reach any of them.**

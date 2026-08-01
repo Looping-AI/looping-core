@@ -1,13 +1,13 @@
 import { noDeprecatedObjectProperties } from "./no-deprecated-object-properties.js";
 
 /**
- * `@looping/core/eslint` — the lint rules this stack needs that no upstream
+ * `@loopingai/core/eslint` — the lint rules this stack needs that no upstream
  * plugin provides.
  *
  * Consume as a flat-config plugin:
  *
  * ```js
- * import looping from "@looping/core/eslint";
+ * import looping from "@loopingai/core/eslint";
  *
  * export default [
  *   {

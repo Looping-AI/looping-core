@@ -1,5 +1,5 @@
 /**
- * `@looping/core/testing` — the harness both predecessor agents grew, shipped so
+ * `@loopingai/core/testing` — the harness both predecessor agents grew, shipped so
  * a consumer does not grow it a third time.
  *
  * Never import this from runtime code. It is a separate subpath precisely so it
@@ -8,7 +8,7 @@
  *
  * **This barrel is the workerd half** — safe to import from a spec. The VCR
  * recorder needs `undici` and `node:fs`, so it lives behind
- * `@looping/core/testing/node` and must not be re-exported here: pulling it into
+ * `@loopingai/core/testing/node` and must not be re-exported here: pulling it into
  * this graph would drag Node builtins into every spec that wanted a fixture.
  * `vcr-shared.ts` is the seam both realms may load.
  *

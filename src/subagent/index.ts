@@ -50,7 +50,7 @@ export interface SubagentRuntime {
    * Build the durable file store over this facet's own SQLite.
    *
    * Supplied by the host because the backend is a plugin's: core declares the
-   * {@link WorkspaceBacking} shape and the caps, `@looping/plugins/workspace`
+   * {@link WorkspaceBacking} shape and the caps, `@loopingai/plugins/workspace`
    * supplies the `@cloudflare/shell` implementation, and an agent that never
    * delegates file work installs neither.
    */

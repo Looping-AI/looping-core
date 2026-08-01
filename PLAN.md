@@ -5,7 +5,7 @@
 
 ## What this repo is
 
-`@looping/core` — everything an agent cannot choose not to have: the zero-trust A2A
+`@loopingai/core` — everything an agent cannot choose not to have: the zero-trust A2A
 contract, the durable task lifecycle, the delegation and subagent runtime, and the test
 harness.
 
@@ -59,17 +59,17 @@ eslint/         no-deprecated-object-properties
 Same discipline `looping-plugins` uses, for the same reason, plus `/testing` and `/eslint`
 must never enter the runtime graph.
 
-| Subpath                  | Contents                                                                  | ~LOC  |
-| ------------------------ | ------------------------------------------------------------------------- | ----- |
-| `@looping/core`          | `contract.ts`, `createAgentRuntime`, shared types                         | 300   |
-| `@looping/core/a2a`      | card signing, JWKS, gateway-JWT verify, push notify, task store, executor | 1,000 |
-| `@looping/core/worker`   | `createA2AWorker({ manifest, agent, workflow, … })`                       | 250   |
-| `@looping/core/agent`    | session, history, model, inference, budget, control, final-reply          | 870   |
-| `@looping/core/subtasks` | delegation types, decomposition, delegate tool, wave scheduler            | 1,000 |
-| `@looping/core/subagent` | `RecipeSubagent`, `runResumableChunk`, fingerprint, prompt                | 1,150 |
-| `@looping/core/db`       | `AgentDB`, `notify_tasks` + `subtasks` schema/models, migrations          | 750   |
-| `@looping/core/testing`  | VCR (361), mock-model, `FakeSession`, DO helpers, JWK fixtures            | 680   |
-| `@looping/core/eslint`   | the custom rule                                                           | 81    |
+| Subpath                    | Contents                                                                  | ~LOC  |
+| -------------------------- | ------------------------------------------------------------------------- | ----- |
+| `@loopingai/core`          | `contract.ts`, `createAgentRuntime`, shared types                         | 300   |
+| `@loopingai/core/a2a`      | card signing, JWKS, gateway-JWT verify, push notify, task store, executor | 1,000 |
+| `@loopingai/core/worker`   | `createA2AWorker({ manifest, agent, workflow, … })`                       | 250   |
+| `@loopingai/core/agent`    | session, history, model, inference, budget, control, final-reply          | 870   |
+| `@loopingai/core/subtasks` | delegation types, decomposition, delegate tool, wave scheduler            | 1,000 |
+| `@loopingai/core/subagent` | `RecipeSubagent`, `runResumableChunk`, fingerprint, prompt                | 1,150 |
+| `@loopingai/core/db`       | `AgentDB`, `notify_tasks` + `subtasks` schema/models, migrations          | 750   |
+| `@loopingai/core/testing`  | VCR (361), mock-model, `FakeSession`, DO helpers, JWK fixtures            | 680   |
+| `@loopingai/core/eslint`   | the custom rule                                                           | 81    |
 
 ≈ **6,000 lines.** Roughly reactive's agent/subagent/db plus proactive's a2a/worker.
 
@@ -130,7 +130,7 @@ class internals.
 - `config.ts` **values** (model ids, budgets, limits). Core ships the shapes.
 - Vectorize recall, browser tools, `@cloudflare/shell` — all optional → plugins.
 - `WorkspaceHandle` is a **split**: the _interface_ is core (`ToolFamilyContext` references
-  it), the `@cloudflare/shell`-backed _implementation_ is `@looping/plugins/workspace`.
+  it), the `@cloudflare/shell`-backed _implementation_ is `@loopingai/plugins/workspace`.
 
 ---
 
@@ -251,6 +251,6 @@ types. CI always installs from the registry so a link-only-works build can never
 - Every spec suite moves with its code and stays green (`vitest run`).
 - Guardian tests: `verify.ts` rejection matrix; AgentCard fixed-point under repeated
   `fromJSON` **with** `securitySchemes` present.
-- `@looping/core/testing` and `/eslint` are absent from a consumer's runtime bundle.
+- `@loopingai/core/testing` and `/eslint` are absent from a consumer's runtime bundle.
 - Real proof lives in `looping-starter`: three examples, bundle-isolation check, and a
   full task round-trip against the live gateway.

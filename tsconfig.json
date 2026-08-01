@@ -19,7 +19,7 @@
     // declaration-merging seam, not a reference to a generated file.
     // `@cloudflare/vitest-pool-workers/types` is here for `src/testing/*`, which
     // imports `cloudflare:test`. That subpath is only ever loaded from a test
-    // run, and a consumer of `@looping/core/testing` has the pool installed by
+    // run, and a consumer of `@loopingai/core/testing` has the pool installed by
     // definition — nothing in the runtime graph reaches it.
     "types": [
       "@cloudflare/workers-types",
