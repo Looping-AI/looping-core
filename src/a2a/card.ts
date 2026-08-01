@@ -55,26 +55,30 @@ export interface BuildCardOptions {
   /**
    * Advertise the gateway's Bearer-JWT scheme in `securitySchemes`.
    *
-   * **Defaults to `false`, and the default is load-bearing.** `SecurityScheme`
-   * is the card's only protobuf *oneof*, and `SecurityScheme.fromJSON` reads
-   * only the wire spelling (`{ httpAuthSecurityScheme: … }`), not the decoded
-   * `$case` form. A verifier that decodes the fetched card and then canonicalizes
-   * it through `toJSON(fromJSON(card))` therefore decodes twice, and the second
-   * pass collapses `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to
-   * `{ gatewayJwt: {} }` — a different document from the one that was signed, so
-   * **the signature fails**. looping-gateway's `canonicalCardPayload` does
-   * exactly this today.
+   * **Defaults to `false` for historical reasons that no longer hold — see
+   * below before relying on the default.**
    *
-   * With schemes omitted, the served document is a fixed point under repeated
-   * decoding and the signature covers all of it however many times a verifier
-   * normalizes. `securityRequirements` is unaffected either way — it is a plain
-   * map, not a oneof — so the card still declares that auth is *required*, it
-   * just doesn't describe the scheme.
+   * `SecurityScheme` is the card's only protobuf *oneof*, and in earlier SDK
+   * releases `SecurityScheme.fromJSON` read only the wire spelling
+   * (`{ httpAuthSecurityScheme: … }`) and not the decoded `$case` form. A
+   * verifier that decodes the fetched card and then canonicalizes it through
+   * `toJSON(fromJSON(card))` decodes twice, and the second pass collapsed
+   * `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to `{ gatewayJwt: {} }` — a
+   * different document from the one that was signed, so the signature failed.
+   * looping-gateway's `canonicalCardPayload` double-decodes exactly this way.
    *
-   * Turn this on once the verifier stops double-decoding (for looping-gateway:
-   * drop the redundant `fromJSON` in `canonicalCardPayload`, which already
-   * receives a typed `AgentCard`). `card.spec.ts` pins both behaviors, so the
-   * day the SDK makes `fromJSON` idempotent that test will tell you.
+   * **As of the pinned `@a2a-js/sdk` (1.0.1) that is fixed.** `card.spec.ts`
+   * asserts it directly: an advertised-schemes card is a fixed point under
+   * repeated decoding, and its signature verifies both as served and after a
+   * double decode. So the safety argument for the `false` default is gone, and
+   * the remaining reason to keep it is deployment ordering — a gateway pinned to
+   * an older SDK copy would still collapse the oneof. Flip the default once the
+   * gateways in play are known to be on ≥1.0.1; the specs will hold the line if
+   * a later SDK regresses.
+   *
+   * `securityRequirements` is unaffected either way — it is a plain map, not a
+   * oneof — so the card always declares that auth is *required*, it just may not
+   * describe the scheme.
    */
   advertiseSecuritySchemes?: boolean;
 }
