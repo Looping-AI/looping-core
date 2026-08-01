@@ -8,7 +8,7 @@ import {
 /**
  * The Worker under test.
  *
- * `@looping/core` is a library, not a Worker — but its Durable Object pieces
+ * `@loopingai/core` is a library, not a Worker — but its Durable Object pieces
  * (`AgentDB` migrations, the subagent facet's own SQLite) can only be exercised
  * inside workerd. So this file is the minimal host that gives the pool something
  * to bind: a DO that owns an `AgentDB`, and a concrete subclass of the facet.
@@ -44,7 +44,9 @@ export function setSubagentRuntime(runtime: SubagentRuntime): void {
 export class TestSubagent extends RecipeSubagentBase<Cloudflare.Env> {
   protected subagentRuntime(): SubagentRuntime {
     if (!testRuntime) {
-      throw new Error("test subagent runtime not set — call setSubagentRuntime");
+      throw new Error(
+        "test subagent runtime not set — call setSubagentRuntime"
+      );
     }
     return testRuntime;
   }

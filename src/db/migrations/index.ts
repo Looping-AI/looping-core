@@ -21,16 +21,16 @@ type MigrationConfig = Parameters<typeof migrate>[1];
 const dbMigrations: MigrationConfig = {
   journal: {
     entries: [
-    {
-      idx: 0,
-      when: 1785537420937,
-      tag: "0000_init",
-      breakpoints: true
-    }
+      {
+        idx: 0,
+        when: 1785537420937,
+        tag: "0000_init",
+        breakpoints: true
+      }
     ]
   },
   migrations: {
-  m0000: `CREATE TABLE \`notify_tasks\` (
+    m0000: `CREATE TABLE \`notify_tasks\` (
 	\`task_id\` text PRIMARY KEY NOT NULL,
 	\`message_id\` text,
 	\`context_id\` text DEFAULT '' NOT NULL,

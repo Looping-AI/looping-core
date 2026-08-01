@@ -1,5 +1,5 @@
 /**
- * `@looping/core/subtasks` — the delegation layer: what a round may hand out,
+ * `@loopingai/core/subtasks` — the delegation layer: what a round may hand out,
  * how a proposal becomes durable drafts, and which of them may run next.
  */
 
@@ -27,9 +27,6 @@ export {
 
 export { selectWave, type WaveDecision } from "./scheduler.js";
 
-export {
-  isCatalogEligible,
-  type ReferenceCatalogEntry
-} from "./catalog.js";
+export { isCatalogEligible, type ReferenceCatalogEntry } from "./catalog.js";
 
 export * from "./types.js";

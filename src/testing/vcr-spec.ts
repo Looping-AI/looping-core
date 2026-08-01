@@ -1,6 +1,6 @@
 import { beforeEach, afterEach } from "vitest";
 import type { RunnerTestCase, RunnerTestSuite } from "vitest";
-import { VCR_CONTROL_ORIGIN } from "./vcr-shared";
+import { VCR_CONTROL_ORIGIN } from "./vcr-shared.js";
 
 /**
  * Worker-side half of the VCR harness. `setupRecording()` is the *only* thing a

@@ -1,0 +1,352 @@
+import { describe, it, expect } from "vitest";
+// From `cloudflare:workers`, not `cloudflare:test` — the latter's `env` is
+// deprecated, and the repo's type-aware `no-deprecated` rule fails the build on it.
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { TaskState } from "@a2a-js/sdk";
+import { AgentDB, PLUGIN_MIGRATIONS_TABLE } from "./db.js";
+import { makeDoHelpers, doStorage } from "../testing/do.js";
+import type { PluginStore } from "./db.js";
+import type { TaskListQuery } from "./models/tasks.js";
+import type { SubtaskDraft } from "../subtasks/types.js";
+
+/**
+ * The durable layer, exercised inside a real Durable Object.
+ *
+ * These cannot be faked: `AgentDB` runs Drizzle's `durable-sqlite` migrator
+ * against `ctx.storage.sql`, and the guarded status transitions the subtask model
+ * relies on are SQLite `UPDATE … WHERE status = ?` semantics. So each test gets
+ * its own freshly-migrated DO — that is what `makeDoHelpers` is for, and it is
+ * shipped rather than regrown because both predecessors grew one.
+ */
+
+const ns = (env as unknown as { TEST_AGENT: DurableObjectNamespace })
+  .TEST_AGENT;
+const { withDb, freshStub } = makeDoHelpers(ns);
+
+/** `ListTasks` paging fields are required; these specs only vary the filters. */
+const page = (over: Partial<TaskListQuery> = {}): TaskListQuery => ({
+  includeArtifacts: false,
+  limit: 50,
+  offset: 0,
+  ...over
+});
+
+const draft = (localKey: string, over: Partial<SubtaskDraft> = {}) =>
+  ({
+    localKey,
+    type: "generic",
+    prompt: `do ${localKey}`,
+    references: [],
+    dependsOn: [],
+    params: {},
+    ...over
+  }) satisfies SubtaskDraft;
+
+describe("migrations", () => {
+  it("brings core's tables up in a fresh Durable Object", async () => {
+    const found = await withDb("migrate", async (db) => {
+      await db.ensureReady();
+      // Reachable and empty is the whole claim: the migrator ran.
+      return {
+        task: db.tasks.get("nothing-here"),
+        subtasks: db.subtasks.list("nothing-here")
+      };
+    });
+
+    expect(found.task).toBeNull();
+    expect(found.subtasks).toEqual([]);
+  });
+
+  it("is idempotent across the fresh AgentDB every hibernation wake-up builds", async () => {
+    const stub = freshStub("rehydrate");
+
+    const rows = await runInDurableObject(stub, async (instance) => {
+      const storage = doStorage(instance);
+      const first = new AgentDB(storage, { maxSubtasks: 8 });
+      await first.ensureReady();
+      first.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c1" });
+
+      // What a wake-up does: construct again over the same storage.
+      const second = new AgentDB(storage, { maxSubtasks: 8 });
+      await second.ensureReady();
+      return second.tasks.get("t1");
+    });
+
+    expect(rows?.id).toBe("t1");
+  });
+});
+
+describe("tasks", () => {
+  it("is idempotent on the gateway's messageId, not the task id", async () => {
+    // The dedupe key is stable across dispatch retries; accepting a turn twice
+    // must return the same task rather than minting a second one.
+    const { first, second, listed } = await withDb("dedupe", async (db) => {
+      await db.ensureReady();
+      const first = db.tasks.begin({
+        messageId: "msg-1",
+        taskId: "task-a",
+        contextId: "ctx-1"
+      });
+      const second = db.tasks.begin({
+        messageId: "msg-1",
+        taskId: "task-b",
+        contextId: "ctx-1"
+      });
+      return {
+        first,
+        second,
+        listed: db.tasks.list(page({ contextId: "ctx-1" }))
+      };
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.id).toBe("task-a");
+    expect(listed.totalSize).toBe(1);
+  });
+
+  it("filters a listing by context and reports the total for paging", async () => {
+    const listed = await withDb("list", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "ctx-a" });
+      db.tasks.begin({ messageId: "m2", taskId: "t2", contextId: "ctx-a" });
+      db.tasks.begin({ messageId: "m3", taskId: "t3", contextId: "ctx-b" });
+      return {
+        a: db.tasks.list(page({ contextId: "ctx-a" })),
+        b: db.tasks.list(page({ contextId: "ctx-b" })),
+        all: db.tasks.list(page())
+      };
+    });
+
+    expect(listed.a.totalSize).toBe(2);
+    expect(listed.b.totalSize).toBe(1);
+    expect(listed.all.totalSize).toBe(3);
+  });
+
+  it("guards the working transition and refuses it once canceled", async () => {
+    const result = await withDb("cancel", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      const beforeCancel = db.tasks.markWorking("t1");
+      db.tasks.cancel("t1");
+      return { beforeCancel, afterCancel: db.tasks.markWorking("t1") };
+    });
+
+    expect(result.beforeCancel).toBe("ok");
+    expect(result.afterCancel).toBe("canceled");
+  });
+
+  it("round-trips a task through the SDK's own JSON form", async () => {
+    // `task_json` holds `Task.toJSON` output so what is on disk is exactly what
+    // goes on the wire, and both survive SDK class-shape changes.
+    const task = await withDb("roundtrip", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "ctx-9" });
+      return db.tasks.get("t1");
+    });
+
+    expect(task?.id).toBe("t1");
+    expect(task?.contextId).toBe("ctx-9");
+    expect(task?.status?.state).toBe(TaskState.TASK_STATE_SUBMITTED);
+  });
+});
+
+describe("subtasks", () => {
+  it("enforces the durable fan-out guard the model schema also advertises", async () => {
+    await withDb("fanout", async (db) => {
+      await db.ensureReady();
+      const tooMany = Array.from({ length: 9 }, (_, i) => draft(`k${i}`));
+
+      expect(() => db.subtasks.createDecomposition("t1", 1, tooMany)).toThrow(
+        /1\.\.8 subtasks/
+      );
+      expect(() => db.subtasks.createDecomposition("t1", 1, [])).toThrow(
+        /1\.\.8 subtasks/
+      );
+    });
+  });
+
+  it("is idempotent per round, so a retried decomposition does not double-fan", async () => {
+    const { first, again } = await withDb("idempotent-round", async (db) => {
+      await db.ensureReady();
+      const first = db.subtasks.createDecomposition("t1", 1, [
+        draft("a"),
+        draft("b")
+      ]);
+      const again = db.subtasks.createDecomposition("t1", 1, [draft("c")]);
+      return { first, again };
+    });
+
+    expect(first).toHaveLength(2);
+    expect(again.map((s) => s.id)).toEqual(first.map((s) => s.id));
+  });
+
+  it("refuses duplicate local keys within one round", async () => {
+    await withDb("dup-keys", async (db) => {
+      await db.ensureReady();
+      expect(() =>
+        db.subtasks.createDecomposition("t1", 1, [draft("a"), draft("a")])
+      ).toThrow(/duplicate draft local key: a/);
+    });
+  });
+
+  it("resolves dependency edges that point forward to a later draft", async () => {
+    // Every key is registered before any edge is checked, precisely so an edge
+    // may name a draft defined further down the list.
+    const rows = await withDb("forward-edge", async (db) => {
+      await db.ensureReady();
+      return db.subtasks.createDecomposition("t1", 1, [
+        draft("first", { dependsOn: ["second"] }),
+        draft("second")
+      ]);
+    });
+
+    expect(rows).toHaveLength(2);
+    const first = rows.find((r) => r.prompt === "do first");
+    const second = rows.find((r) => r.prompt === "do second");
+    expect(first?.dependsOn).toEqual([second?.id]);
+  });
+
+  it("guards each status transition so a late loser cannot overwrite a result", async () => {
+    const outcome = await withDb("transitions", async (db) => {
+      await db.ensureReady();
+      const [row] = db.subtasks.createDecomposition("t1", 1, [draft("only")]);
+
+      const started = db.subtasks.start(row.id, {
+        recipeId: "r",
+        recipeVersion: 1
+      });
+      const startedTwice = db.subtasks.start(row.id, {
+        recipeId: "r",
+        recipeVersion: 1
+      });
+      const completed = db.subtasks.complete(row.id, [
+        { kind: "text", text: "done" }
+      ]);
+      // The Workflow's last-resort failSubtask arriving after the real result.
+      const failedLate = db.subtasks.fail(row.id, "too late");
+
+      return {
+        started,
+        startedTwice,
+        completed,
+        failedLate,
+        final: db.subtasks.get(row.id)
+      };
+    });
+
+    expect(outcome.started).toBe(true);
+    expect(outcome.startedTwice).toBe(false);
+    expect(outcome.completed).toBe(true);
+    expect(outcome.failedLate).toBe(false);
+    expect(outcome.final?.status).toBe("completed");
+  });
+
+  it("refuses to record a completed subtask with no usable output", async () => {
+    await withDb("empty-result", async (db) => {
+      await db.ensureReady();
+      const [row] = db.subtasks.createDecomposition("t1", 1, [draft("only")]);
+      db.subtasks.start(row.id, { recipeId: "r", recipeVersion: 1 });
+
+      expect(() =>
+        db.subtasks.complete(row.id, [{ kind: "text", text: "   " }])
+      ).toThrow(/non-empty text part/);
+    });
+  });
+});
+
+describe("plugin stores", () => {
+  const makeStore = (version: number, calls: number[]): PluginStore => ({
+    plugin: "demo",
+    version,
+    ensureTables(sql, from) {
+      calls.push(from);
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS demo_rows (id INTEGER PRIMARY KEY, note TEXT)"
+      );
+      if (from < 2)
+        sql.exec("CREATE INDEX IF NOT EXISTS demo_note ON demo_rows (note)");
+    }
+  });
+
+  it("runs a store's DDL and records its version outside core's journal", async () => {
+    const calls: number[] = [];
+    const version = await withDbStores(
+      "store-v1",
+      [makeStore(1, calls)],
+      (sql) =>
+        sql
+          .exec<{ version: number }>(
+            `SELECT version FROM ${PLUGIN_MIGRATIONS_TABLE} WHERE plugin = 'demo'`
+          )
+          .toArray()[0]?.version
+    );
+
+    // `from` is 0 on the first ever run, which is what lets an upgrade branch.
+    expect(calls).toEqual([0]);
+    expect(version).toBe(1);
+  });
+
+  it("refuses a downgrade rather than silently running older DDL", async () => {
+    const stub = freshStub("downgrade");
+
+    await expect(
+      runInDurableObject(stub, async (instance) => {
+        const storage = doStorage(instance);
+        const up = new AgentDB(storage, {
+          maxSubtasks: 8,
+          stores: [makeStore(2, [])]
+        });
+        await up.ensureReady();
+
+        const down = new AgentDB(storage, {
+          maxSubtasks: 8,
+          stores: [makeStore(1, [])]
+        });
+        await down.ensureReady();
+      })
+    ).rejects.toThrow(/downgrade is not supported/);
+  });
+
+  it("refuses two plugins claiming one storage namespace", async () => {
+    const stub = freshStub("dup-store");
+
+    await expect(
+      runInDurableObject(stub, async (instance) => {
+        const db = new AgentDB(doStorage(instance), {
+          maxSubtasks: 8,
+          stores: [makeStore(1, []), makeStore(1, [])]
+        });
+        await db.ensureReady();
+      })
+    ).rejects.toThrow(/duplicate PluginStore 'demo'/);
+  });
+
+  it("refuses a non-integer or zero version", async () => {
+    const stub = freshStub("bad-version");
+
+    await expect(
+      runInDurableObject(stub, async (instance) => {
+        const db = new AgentDB(doStorage(instance), {
+          maxSubtasks: 8,
+          stores: [{ plugin: "x", version: 0, ensureTables: () => {} }]
+        });
+        await db.ensureReady();
+      })
+    ).rejects.toThrow(/must be an integer >= 1/);
+  });
+});
+
+/** Run `fn` against the raw SQL handle of a DO whose AgentDB carries `stores`. */
+async function withDbStores<T>(
+  label: string,
+  stores: readonly PluginStore[],
+  fn: (sql: SqlStorage) => T
+): Promise<T> {
+  return runInDurableObject(freshStub(label), async (instance) => {
+    const storage = doStorage(instance);
+    const db = new AgentDB(storage, { maxSubtasks: 8, stores });
+    await db.ensureReady();
+    return fn(storage.sql);
+  });
+}

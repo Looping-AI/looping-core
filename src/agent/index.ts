@@ -1,5 +1,5 @@
 /**
- * `@looping/core/agent` — the primitives a loop is built from.
+ * `@loopingai/core/agent` — the primitives a loop is built from.
  *
  * Core ships no loop. `turn.ts` / `loop.ts` are the agent's, because how a round
  * ends is the one thing every agent genuinely differs on. What core owns is

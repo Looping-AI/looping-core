@@ -33,7 +33,9 @@ export class DurableTaskStore implements TaskStore {
   ) {}
 
   async load(taskId: string): Promise<Task | undefined> {
-    return (await this.resolveAgent(this.identity).getTask(taskId)) ?? undefined;
+    return (
+      (await this.resolveAgent(this.identity).getTask(taskId)) ?? undefined
+    );
   }
 
   async save(task: Task): Promise<void> {

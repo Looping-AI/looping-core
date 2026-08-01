@@ -2,7 +2,7 @@
  * The plugin contract — the only thing core and a plugin package both name.
  *
  * Re-exported from the package root as well, so a plugin author writes
- * `import { definePlugin } from "@looping/core"` and nothing else.
+ * `import { definePlugin } from "@loopingai/core"` and nothing else.
  */
 
 export {

@@ -19,7 +19,7 @@ export const STEP_TIMEOUT_MS = 10 * 60_000;
 /**
  * Platform fact: a single Workflow instance may run ~10,000 steps (paid plan).
  * {@link MAX_CHUNKS_PER_BRANCH} is sized against this — see the worst-case
- * product asserted in `test/agent/subtasks/subtask-types.spec.ts`.
+ * product asserted in `platform.spec.ts`.
  */
 export const STEPS_PER_INSTANCE = 10_000;
 
@@ -38,7 +38,7 @@ export const CHUNK_SOFT_MS = 4 * 60_000;
  * Hard ceiling on durable chunk steps for one Subtask branch. A backstop, not a
  * budget: the Workflow *fails* a branch that reaches it, so reaching it is a bug.
  * It is held unreachable by two constraints, both asserted in
- * `test/agent/subtasks/subtask-types.spec.ts`:
+ * `platform.spec.ts`:
  *
  * 1. It exceeds every Recipe's `maxTurns`. A chunk that yields always advanced at
  *    least one turn, so a run takes at most `maxTurns` chunks however short they

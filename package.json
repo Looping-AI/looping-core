@@ -1,19 +1,41 @@
 {
-  "name": "@looping/core",
+  "name": "@loopingai/core",
   "version": "0.1.0",
   "description": "Shared, mandatory foundation for Looping agents on Cloudflare Workers: zero-trust A2A, durable task lifecycle, delegation and subagent runtime, test harness.",
-  "license": "Apache-2.0",
+  "keywords": [
+    "a2a",
+    "agent2agent",
+    "ai-agents",
+    "cloudflare-workers",
+    "durable-objects",
+    "agents-sdk",
+    "zero-trust",
+    "jwks",
+    "eddsa",
+    "workflows"
+  ],
+  "license": "GPL-3.0-only",
+  "author": "Looping AI",
+  "homepage": "https://github.com/Looping-AI/looping-core#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Looping-AI/looping-core.git"
   },
+  "bugs": {
+    "url": "https://github.com/Looping-AI/looping-core/issues"
+  },
   "type": "module",
   "sideEffects": false,
+  "bin": {
+    "looping-keys": "scripts/generate-keys.mjs"
+  },
   "files": [
     "dist",
     "eslint-rules",
+    "scripts/generate-keys.mjs",
     "README.md",
-    "PLAN.md"
+    "PLAN.md",
+    "LICENSE"
   ],
   "exports": {
     ".": {
@@ -48,19 +70,30 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
     },
+    "./testing/node": {
+      "types": "./dist/testing/node.d.ts",
+      "import": "./dist/testing/node.js"
+    },
+    "./testing/vcr-global-setup": {
+      "types": "./dist/testing/vcr-global-setup.d.ts",
+      "import": "./dist/testing/vcr-global-setup.js"
+    },
     "./eslint": "./eslint-rules/index.js",
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "db:generate": "drizzle-kit generate && node scripts/build-migrations.mjs",
+    "keys": "node scripts/generate-keys.mjs",
     "types": "wrangler types",
     "format": "prettier --write .",
     "lint": "eslint .",
     "check": "prettier --check . && eslint . && tsc && tsc -p test/tsconfig.json && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "verify:exports": "node scripts/verify-exports.mjs",
+    "prepack": "npm run build && npm run verify:exports",
+    "prepublishOnly": "npm run check && npm test && npm run verify:exports"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.0.0",

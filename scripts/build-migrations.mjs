@@ -20,7 +20,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "src/db/migrations");
 
-const journal = JSON.parse(readFileSync(join(DIR, "meta/_journal.json"), "utf8"));
+const journal = JSON.parse(
+  readFileSync(join(DIR, "meta/_journal.json"), "utf8")
+);
 const sqlFiles = new Set(readdirSync(DIR).filter((f) => f.endsWith(".sql")));
 
 const entries = [];
@@ -39,7 +41,10 @@ for (const entry of journal.entries) {
   const key = `m${String(entry.idx).padStart(4, "0")}`;
   const sql = readFileSync(join(DIR, file), "utf8").trimEnd();
   // Backticks and `${` would terminate or interpolate the template literal.
-  const escaped = sql.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+  const escaped = sql
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
 
   entries.push(
     `    {\n      idx: ${entry.idx},\n      when: ${entry.when},\n      tag: ${JSON.stringify(entry.tag)},\n      breakpoints: ${entry.breakpoints}\n    }`

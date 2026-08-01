@@ -1,5 +1,5 @@
 /**
- * `@looping/core/a2a` — the A2A protocol adapter.
+ * `@loopingai/core/a2a` — the A2A protocol adapter.
  *
  * The zero-trust contract in both directions (verify the gateway with its public
  * JWKS, prove ourselves with ours), the accept-and-notify task lifecycle, and the

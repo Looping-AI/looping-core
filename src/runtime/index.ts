@@ -129,7 +129,7 @@ export function createAgentRuntime(
     if (plugin.contractVersion !== PLUGIN_CONTRACT_VERSION) {
       throw new RuntimeSetupError(
         `plugin "${plugin.key}" was built against plugin contract v${plugin.contractVersion}, ` +
-          `but this @looping/core speaks v${PLUGIN_CONTRACT_VERSION}. ` +
+          `but this @loopingai/core speaks v${PLUGIN_CONTRACT_VERSION}. ` +
           "Upgrade whichever of the two is behind — they publish from separate repos, " +
           "so a version train can leave one lagging."
       );
@@ -206,7 +206,8 @@ export function createAgentRuntime(
     mainAgentTools(): ToolSet {
       const tools: ToolSet = {};
       for (const plugin of plugins) {
-        if (plugin.mainAgentTools) Object.assign(tools, plugin.mainAgentTools());
+        if (plugin.mainAgentTools)
+          Object.assign(tools, plugin.mainAgentTools());
       }
       return tools;
     },

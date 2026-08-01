@@ -1,7 +1,280 @@
-# looping-core
+# @loopingai/core
 
-Shared, mandatory foundation for Looping agents on Cloudflare Workers: zero-trust A2A
-(signed AgentCard, gateway-JWT verification, no shared secrets), the durable task
-lifecycle, the delegation and subagent runtime, and the test harness. Published as
-@looping/core with per-area subpath exports. Consumers bring the loop and the prompts;
-core brings everything they cannot choose not to have.
+**The mandatory foundation for a Looping agent on Cloudflare Workers.**
+
+Zero-trust A2A (signed AgentCard, gateway-JWT verification, no shared secrets), the
+durable task lifecycle, the delegation and subagent runtime, and the test harness.
+
+You bring the loop and the prompts. Core brings everything you cannot choose not to have.
+
+```bash
+npm install @loopingai/core
+```
+
+> Part of a three-package split:
+> **`@loopingai/core`** (this) ·
+> [`looping-plugins`](https://github.com/Looping-AI/looping-plugins) (optional, composable capabilities) ·
+> [`looping-starter`](https://github.com/Looping-AI/looping-starter) (a working agent that composes them).
+
+---
+
+## Why this exists
+
+An agent that talks to other agents has to answer one question before anything else:
+_is the caller who they claim to be, and can they prove it without a shared secret?_
+That answer — and the durable machinery for accepting a turn, decomposing it, and
+delivering a result out of band — is identical for every agent. It is also the part
+that is easy to get subtly and silently wrong.
+
+So it ships once, here, with the security-critical paths pinned by tests. Anything
+optional is a plugin. Anything opinionated belongs to your app.
+
+---
+
+## Quick start
+
+### 1. Generate a signing key
+
+```bash
+npx looping-keys
+```
+
+Set the private JWK as `A2A_SIGNING_KEY` (`.dev.vars` locally, `wrangler secret put`
+when deployed) and the origins you accept calls from as `GATEWAY_ORIGINS`:
+
+```ini
+# .dev.vars
+A2A_SIGNING_KEY={"crv":"Ed25519","d":"…","x":"…","kty":"OKP","kid":"a2a-2026-08-01"}
+GATEWAY_ORIGINS=["https://gateway.example.com"]
+```
+
+The public half is never configured anywhere — the Worker derives it from the private
+key and serves it at the card's `jku`.
+
+### 2. Put the A2A edge in front of your Durable Object
+
+```ts
+import { createA2AWorker } from "@loopingai/core/worker";
+
+const manifest = {
+  name: "my-agent",
+  description: "Does a useful thing.",
+  version: "1.0.0",
+  capabilities: { streaming: false, pushNotifications: true, extensions: [] },
+  defaultInputModes: ["text/plain"],
+  defaultOutputModes: ["text/plain"],
+  skills: []
+};
+
+export default {
+  fetch: createA2AWorker({
+    manifest,
+    // One DO instance per verified caller — this is what makes a task
+    // unreachable from any other caller by construction.
+    resolveAgent: (identity) =>
+      env.MY_AGENT.get(env.MY_AGENT.idFromName(identity.key!)),
+    // Must be idempotent: the gateway retries dispatch.
+    startTurn: async (turn) => {
+      await env.TURN_WORKFLOW.create({ id: turn.messageId, params: turn });
+    }
+  })
+} satisfies ExportedHandler<Env>;
+```
+
+That handler serves three routes: the public JWKS, a **signed** AgentCard at
+`/.well-known/agent-card.json`, and gateway-authenticated JSON-RPC. Every POST is
+verified before a Durable Object is ever addressed.
+
+### 3. Build the runtime in your Durable Object
+
+Everything that would otherwise be a module-level constant is resolved once per DO
+instance, from your config and your installed plugins:
+
+```ts
+import { Agent } from "agents";
+import { createAgentRuntime } from "@loopingai/core";
+import { AgentDB } from "@loopingai/core/db";
+
+export class MyAgent extends Agent<Env> {
+  runtime!: ReturnType<typeof createAgentRuntime>;
+  db!: AgentDB;
+
+  async onStart() {
+    this.runtime = createAgentRuntime({
+      config: { model: { chatModelId: "@cf/zai-org/glm-5.2" } },
+      plugins: [scraper({ apiKey: this.env.SCRAPER_API_KEY })],
+      env: this.env // opt in to verifying every plugin's declared bindings exist
+    });
+
+    this.db = new AgentDB(this.ctx.storage, {
+      maxSubtasks: this.runtime.config.maxSubtasks,
+      stores: this.runtime.stores
+    });
+    await this.db.ensureReady();
+  }
+}
+```
+
+Resolving a registry at _import_ time is the one thing this package exists to
+prevent: it freezes the registry before `env` exists (which on Workers is always),
+defeats tree-shaking, and makes runtime plugin selection impossible.
+
+---
+
+## Exports
+
+No root barrel. Each area is its own subpath, so importing the delegation layer does
+not drag in the A2A adapter, and the test harness cannot reach a production bundle.
+
+| Subpath                        | What's in it                                                                |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `@loopingai/core`              | `createAgentRuntime`, the plugin contract, config shapes, platform facts    |
+| `@loopingai/core/a2a`          | card signing, JWKS, gateway-JWT verify, push notify, task store, executor   |
+| `@loopingai/core/worker`       | `createA2AWorker()` — the whole zero-trust edge                             |
+| `@loopingai/core/agent`        | session, history, model runtime, inference, budget, control tools           |
+| `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool, wave scheduler        |
+| `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
+| `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
+| `@loopingai/core/testing`      | VCR, `FakeSession`, `mockModel`, DO helpers, JWK fixtures — _workerd realm_ |
+| `@loopingai/core/testing/node` | the VCR recorder — _Node realm, never import from a spec_                   |
+| `@loopingai/core/eslint`       | the `no-deprecated-object-properties` rule                                  |
+
+`/testing*` and `/eslint` are structurally incapable of entering a runtime graph, and
+`npm run verify:exports` asserts exactly that before every publish.
+
+---
+
+## The zero-trust model
+
+No secret ever crosses the boundary, in either direction.
+
+```
+Gateway ──── EdDSA JWT, jku → its public JWKS ────▶ Agent    "the agent knows the gateway"
+Agent   ──── signed AgentCard, jku → its JWKS  ────▶ Gateway  "the gateway knows the agent"
+```
+
+`verifyGatewayToken` runs four checks, in this order, on every single call:
+
+1. **`jku` present** in the protected header (RFC 7515 §4.1.2).
+2. **`jku` origin is allowlisted** — validated _before_ the fetch, so an attacker
+   cannot point `jku` at a JWKS they control.
+3. **`iss` origin equals `jku` origin** — one listed gateway cannot impersonate another.
+4. **`jwtVerify` pinned to EdDSA.**
+
+All four are load-bearing. Do not make any of them optional, and do not add a
+local-development bypass — run a local gateway instead. `verify.spec.ts` asserts each
+one negatively, including that an unlisted `jku` is rejected _before_ any network
+call happens.
+
+The agent's card is signed over its **wire (protobuf-JSON) encoding**, which is what
+makes the served document a fixed point under the repeated decoding a verifier
+performs. A gateway pins the card's `kid` + `jku` on first registration
+(Trust-On-First-Use).
+
+---
+
+## Plugins
+
+A capability is a plugin. Core never imports one — your app registers it, which keeps
+bundle size proportional to what you actually installed.
+
+```ts
+import { definePlugin } from "@loopingai/core";
+
+export const scraper = (config: { apiKey: string }) =>
+  definePlugin({
+    key: "scraper",
+    subtaskType: {
+      key: "scrape",
+      description: "fetch a page and summarize it",
+      params: z.object({ url: z.string().describe("page to fetch") }),
+      recipe
+    },
+    toolFamilies: { web: (ctx) => ({ tools: { fetchPage: /* … */ } }) },
+    capability: "You can scrape a page and summarize it.",
+    requires: { secrets: ["SCRAPER_API_KEY"] },
+    store: { plugin: "scraper", version: 1, ensureTables: (sql, from) => { /* … */ } }
+  });
+```
+
+`createAgentRuntime` fails at DO start — never mid-request — on a duplicate plugin
+key, a duplicate tool family, a missing declared binding, or a
+`PLUGIN_CONTRACT_VERSION` mismatch. Because core, plugins, and starter publish from
+separate repos, one of them is always briefly behind; that version assert turns the
+skew into a readable sentence instead of a structural-type error several frames from
+its cause.
+
+The contract is **additive-only within a major**: new capabilities arrive as optional
+fields on `AgentPlugin`.
+
+---
+
+## Testing
+
+The harness both predecessor agents grew, shipped so you don't grow it a third time.
+
+```ts
+import {
+  FakeSession,
+  mockModel,
+  makeGatewayToken,
+  makeDoHelpers
+} from "@loopingai/core/testing";
+
+const { withDb } = makeDoHelpers(env.MY_AGENT);
+
+await withDb("accepts a turn once", async (db) => {
+  await db.ensureReady();
+  db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c1" });
+});
+```
+
+- **VCR** — record/replay real HTTP against on-disk cassettes, split across the Node
+  and workerd realms because specs run in workerd, which has no filesystem. Point
+  vitest's `globalSetup` at `@loopingai/core/testing/vcr-global-setup`.
+- **Fakes** — `FakeSession` (a `SessionLike` reference implementation) and `mockModel`
+  (a scripted `LanguageModel`), so a loop can be driven with no model call at all.
+- **Fixtures** — Ed25519 keypairs and a gateway-JWT signer, so the zero-trust path is
+  exercisable end to end without a real gateway.
+
+---
+
+## What core deliberately does _not_ contain
+
+- The turn loop, triage, and the DO / Workflow class bodies. Core ships the argument
+  and budget types; you write the loop.
+- The main agent's soul. Core ships no prompt copy.
+- Config _values_ — model ids, budgets, limits. Core ships the shapes and safe
+  defaults, and `resolveConfig` validates your overrides.
+- Vectorize recall, browser tools, shell. All optional → plugins.
+
+---
+
+## Requirements
+
+- **Node** ≥ 24 (for build and test only — the package itself runs on workerd)
+- **Bindings:** `AI`, one Durable Object, one Workflow
+- **Secrets:** `A2A_SIGNING_KEY`, `GATEWAY_ORIGINS`
+- **Peers, never bundled:** `agents`, `ai`, `workers-ai-provider`
+
+That last point is not stylistic: two copies of `agents` in one Worker breaks the
+`Session` / `SessionMessage` types and every `instanceof`. For local development
+across the three repos use `file:` overrides, or `npm pack` plus a tarball install —
+**not `npm link`**, which duplicates peer dependencies.
+
+---
+
+## Contributing
+
+[`AGENTS.md`](./AGENTS.md) documents the constraints this package is guardian of;
+[`PLAN.md`](./PLAN.md) covers what belongs here and what does not.
+
+```bash
+npm run check           # prettier + eslint + tsc (src) + tsc (test) + build
+npm test                # vitest, inside real workerd
+npm run verify:exports  # the publish gate: subpaths, ESM specifiers, realm isolation
+```
+
+## License
+
+[GPL-3.0-only](./LICENSE).
