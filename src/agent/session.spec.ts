@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { appendOnce, archivingCompaction } from "./session.js";
+import { appendOnce, notifyingCompaction } from "./session.js";
 import {
   deterministicSessionMessage,
   sessionText,
@@ -65,37 +65,38 @@ describe("appendOnce", () => {
   });
 });
 
-describe("archivingCompaction", () => {
+describe("notifyingCompaction", () => {
   const history = [msg("m1", "one"), msg("m2", "two"), msg("m3", "three")];
   const result = { fromMessageId: "m1", toMessageId: "m2" };
 
-  it("hands the displaced range to onArchive", async () => {
-    const archived: SessionMessage[][] = [];
-    const wrapped = archivingCompaction(
+  it("hands the displaced range to the listener", async () => {
+    const displaced: SessionMessage[][] = [];
+    const wrapped = notifyingCompaction(
       (async () => result) as never,
       async (messages) => {
-        archived.push(messages);
+        displaced.push(messages);
       }
     );
 
     await wrapped(history as never, {} as never);
 
     // Inclusive of both ends: m1..m2 is what the summary replaced.
-    expect(archived[0].map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(displaced[0].map((m) => m.id)).toEqual(["m1", "m2"]);
   });
 
-  it("returns the base function untouched when nothing archives", () => {
+  it("returns the base function untouched when nothing is listening", () => {
     const base = (async () => result) as never;
-    expect(archivingCompaction(base, undefined)).toBe(base);
+    expect(notifyingCompaction(base, undefined)).toBe(base);
   });
 
-  it("still compacts when the archive store throws", async () => {
-    // Compaction must shorten history even if recall is briefly unavailable —
-    // the alternative is unbounded context because a side store is down.
-    const wrapped = archivingCompaction(
+  it("still compacts when the listener throws", async () => {
+    // Compaction must shorten history even when whatever is listening is
+    // briefly unavailable — the alternative is unbounded context because a
+    // side concern is down.
+    const wrapped = notifyingCompaction(
       (async () => result) as never,
       async () => {
-        throw new Error("vectorize unavailable");
+        throw new Error("listener unavailable");
       }
     );
 
@@ -104,15 +105,15 @@ describe("archivingCompaction", () => {
     );
   });
 
-  it("skips archival when the displaced range is not in the history it saw", async () => {
-    const onArchive = vi.fn();
-    const wrapped = archivingCompaction(
+  it("skips the notification when the displaced range is not in the history it saw", async () => {
+    const onMessagesDisplaced = vi.fn();
+    const wrapped = notifyingCompaction(
       (async () => ({ fromMessageId: "ghost", toMessageId: "m2" })) as never,
-      onArchive
+      onMessagesDisplaced
     );
 
     await wrapped(history as never, {} as never);
-    expect(onArchive).not.toHaveBeenCalled();
+    expect(onMessagesDisplaced).not.toHaveBeenCalled();
   });
 });
 

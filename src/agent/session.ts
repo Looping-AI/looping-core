@@ -8,8 +8,12 @@ import { sessionText } from "./history.js";
 /**
  * The one continuous {@link Session} an agent Durable Object owns. Ported from
  * the looping-gateway admin agent's `shared/session.ts` (single Session per DO —
- * soul + memory + compaction). Recall (Vectorize) archival is Phase 3: the
- * `onArchive` seam is present but left unwired for now.
+ * soul + memory + compaction).
+ *
+ * Compaction is the one **lossy** thing this module does, so it is also the one
+ * thing it announces: `onMessagesDisplaced` hands over the raw messages a
+ * summary is about to replace. Core neither stores them nor knows who wants
+ * them — a host wires the seam to whatever does.
  */
 
 /**
@@ -39,7 +43,7 @@ export interface SessionLike {
   getMessage(id: string): Promise<SessionMessage | null>;
   refreshSystemPrompt(): Promise<string>;
   tools(): Promise<ToolSet>;
-  /** Compaction overlays so far — non-empty ⇒ an episodic archive exists. */
+  /** Compaction overlays so far — non-empty ⇒ history has been displaced. */
   getCompactions(): Promise<unknown[]>;
 }
 
@@ -87,26 +91,32 @@ export interface AgentSessionOptions {
    */
   maxOutputTokens: number;
   /**
-   * Archive the raw messages displaced by each compaction (episodic recall).
-   * Best-effort: a throw here must never abort compaction. (Wired in Phase 3.)
+   * Hand over the raw messages each compaction displaces, before a summary
+   * replaces them. Best-effort: a throw here must never abort compaction.
+   *
+   * The seam, not a policy — pass `runtime.onMessagesDisplaced` to reach every
+   * installed plugin declaring the hook, or any function of your own.
    */
-  onArchive?: (messages: SessionMessage[]) => Promise<void>;
+  onMessagesDisplaced?: (messages: SessionMessage[]) => Promise<void>;
 }
 
 type CompactFn = ReturnType<typeof createCompactFunction>;
 
 /**
  * Wrap a compaction function so the raw messages it folds into a summary are
- * also handed to `onArchive` (which embeds them for later recall). The displaced
- * range is `fromMessageId..toMessageId` of the result, sliced from the `history`
- * the compaction saw. Archival failure is swallowed — compaction must still
- * shorten history even if the recall store is briefly unavailable.
+ * also handed to `onMessagesDisplaced` before they stop being readable as
+ * history. The displaced range is `fromMessageId..toMessageId` of the result,
+ * sliced from the `history` the compaction saw.
+ *
+ * A listener's failure is swallowed — compaction must still shorten history
+ * when whatever is listening is briefly unavailable. The alternative is
+ * unbounded context because a side concern is down.
  */
-export function archivingCompaction(
+export function notifyingCompaction(
   base: CompactFn,
-  onArchive?: (messages: SessionMessage[]) => Promise<void>
+  onMessagesDisplaced?: (messages: SessionMessage[]) => Promise<void>
 ): CompactFn {
-  if (!onArchive) return base;
+  if (!onMessagesDisplaced) return base;
   return async (history, options) => {
     const result = await base(history, options);
     if (result) {
@@ -114,9 +124,9 @@ export function archivingCompaction(
       const to = history.findIndex((m) => m.id === result.toMessageId);
       if (from !== -1 && to !== -1) {
         try {
-          await onArchive(history.slice(from, to + 1));
+          await onMessagesDisplaced(history.slice(from, to + 1));
         } catch (err) {
-          console.error("[recall] archive on compaction failed", err);
+          console.error("[session] displacement listener failed", err);
         }
       }
     }
@@ -135,7 +145,7 @@ export function buildAgentSession(
   model: LanguageModel,
   opts: AgentSessionOptions
 ): Session {
-  const compact = archivingCompaction(
+  const compact = notifyingCompaction(
     createCompactFunction({
       // The one boundary worth owning. `protectHead` (3) and `minTailMessages`
       // (2) keep the SDK defaults: the head is the conversation's opening and is
@@ -151,7 +161,7 @@ export function buildAgentSession(
           maxOutputTokens: opts.maxOutputTokens
         }).then((r) => r.text)
     }),
-    opts.onArchive
+    opts.onMessagesDisplaced
   );
   return Session.create(agent)
     .withContext("soul", { provider: { get: async () => opts.soul() } })

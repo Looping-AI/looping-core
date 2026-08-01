@@ -31,7 +31,8 @@ export const DELEGATE_TOOL_NAME = "delegate";
  * performs this call, durably, outside the inference — so there is nothing for the
  * SDK to run, and the tool loop halts on the call rather than trying to continue
  * past it. That is what makes it a *control* tool: unlike the agent's work tools
- * (`recall`, `browser_*`, `set_context`), calling it ends the round.
+ * (`set_context`, and whatever the installed plugins offer), calling it ends the
+ * round.
  *
  * Its `inputSchema` is the delegation contract itself, and it is the **only**
  * declaration of this tool. One schema has to serve both directions — the calls

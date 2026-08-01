@@ -32,10 +32,12 @@ export interface RecipePolicy {
    * Tool-family keys the runtime recognizes — derived from the installed
    * plugins, never hardcoded.
    *
-   * `recall` and the Session's `set_context` are never valid families: a
-   * subagent has no Session or durable memory to reach, and their absence from
-   * any plugin's `toolFamilies` makes them structurally impossible to enable
-   * through recipe data.
+   * A main-agent-only tool is never a valid family — the Session's
+   * `set_context`, or anything a plugin offers only through `mainAgentTools`
+   * (an episodic-memory search, say). A subagent has no Session or durable
+   * memory to reach, and such a tool's absence from every plugin's
+   * `toolFamilies` makes it structurally impossible to enable through recipe
+   * data.
    */
   knownToolFamilies: ReadonlySet<string>;
   /** The baseline a recipe's declared `limits` merge over. */

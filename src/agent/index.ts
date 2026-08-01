@@ -12,7 +12,6 @@ export { newTurnBudget, stepAllowance, type TurnBudget } from "./budget.js";
 
 export {
   createModelRuntime,
-  type Embed,
   type GatewayMetadata,
   type ModelOverrides,
   type ModelPair,
@@ -22,8 +21,8 @@ export {
 
 export {
   appendOnce,
-  archivingCompaction,
   buildAgentSession,
+  notifyingCompaction,
   type AgentSessionOptions,
   type SessionHost,
   type SessionLike

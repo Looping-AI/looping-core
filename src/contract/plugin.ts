@@ -1,4 +1,5 @@
 import type { ToolSet } from "ai";
+import type { SessionMessage } from "agents/experimental/memory/session";
 import type { PluginStore } from "../db/db.js";
 import type { WorkspaceHandle } from "../subagent/workspace.js";
 import type {
@@ -166,6 +167,25 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
   ) => Promise<RecipeExecutionResult>;
   /** Release anything {@link resolveRuntime} acquired, when an execution is canceled. */
   onAbort?: (ctx: ResolveRuntimeContext) => Promise<void>;
+
+  // --- session lifecycle ---
+
+  /**
+   * The raw messages a compaction is about to fold into a summary, handed over
+   * before they stop being readable as history.
+   *
+   * This is core being honest about a **lossy operation it performs**, not a
+   * write path for any one plugin: compaction is destructive, core is what
+   * destroys, and anything that wants the originals — an archive, an audit log,
+   * a cold-storage dump — needs to be told at exactly this moment. What a plugin
+   * does with them is entirely its own business; core neither knows nor cares.
+   *
+   * Best-effort in both directions. A throw here never aborts compaction —
+   * history must still shorten when a side store is briefly unavailable — and
+   * the runtime fans out with `Promise.allSettled`, so one plugin's rejection
+   * can neither abort another plugin's write nor leave it unawaited.
+   */
+  onMessagesDisplaced?: (messages: SessionMessage[]) => Promise<void>;
 
   // --- storage + requirements ---
 

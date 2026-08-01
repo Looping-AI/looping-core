@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
 import { tool } from "ai";
+import type { SessionMessage } from "agents/experimental/memory/session";
 import { createAgentRuntime, RuntimeSetupError } from "./index.js";
+import { deterministicSessionMessage } from "../agent/history.js";
 import { buildRecipeTools, collectToolFamilies } from "./tool-families.js";
 import {
   definePlugin,
@@ -196,6 +198,76 @@ describe("createAgentRuntime — what it composes", () => {
     // of emitting a separator around nothing.
     const rt = createAgentRuntime({ plugins: [definePlugin({ key: "bare" })] });
     expect(rt.renderCapabilities()).toBe("");
+  });
+
+  describe("onMessagesDisplaced", () => {
+    // Compaction is lossy and core is what performs it, so the announcement is
+    // core's to make. What a plugin does with the messages is its own business.
+    const displaced: SessionMessage[] = [
+      deterministicSessionMessage("m1", "user", "one"),
+      deterministicSessionMessage("m2", "assistant", "two")
+    ];
+
+    it("fans out to every plugin declaring the hook", async () => {
+      const seen: Record<string, string[]> = {};
+      const listener = (key: string) =>
+        definePlugin({
+          key,
+          onMessagesDisplaced: async (messages) => {
+            seen[key] = messages.map((m) => m.id);
+          }
+        });
+
+      const rt = createAgentRuntime({
+        plugins: [listener("one"), beta, listener("two")]
+      });
+      await rt.onMessagesDisplaced(displaced);
+
+      expect(seen).toEqual({ one: ["m1", "m2"], two: ["m1", "m2"] });
+    });
+
+    it("still delivers to the others when one plugin rejects", async () => {
+      // The `allSettled` property. A `Promise.all` here fails this twice over:
+      // it rejects the aggregate at the first throw, and it stops awaiting the
+      // rest — so the healthy plugin's write is still in flight when the
+      // wrapper returns, and on a DO the isolate can be evicted before it
+      // lands. The healthy listener defers past a macrotask precisely so this
+      // test can tell the two apart.
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      let delivered: string[] = [];
+
+      const rt = createAgentRuntime({
+        plugins: [
+          definePlugin({
+            key: "broken",
+            onMessagesDisplaced: async () => {
+              throw new Error("store unavailable");
+            }
+          }),
+          definePlugin({
+            key: "healthy",
+            onMessagesDisplaced: async (messages) => {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              delivered = messages.map((m) => m.id);
+            }
+          })
+        ]
+      });
+
+      await expect(rt.onMessagesDisplaced(displaced)).resolves.toBeUndefined();
+      expect(delivered).toEqual(["m1", "m2"]);
+
+      // Logged against the key that caused it — an anonymous aggregate is not
+      // debuggable across installed plugins.
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(errors.mock.calls[0][0]).toContain("broken");
+      errors.mockRestore();
+    });
+
+    it("resolves cleanly when no plugin declares it", async () => {
+      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      await expect(rt.onMessagesDisplaced(displaced)).resolves.toBeUndefined();
+    });
   });
 
   it("applies config overrides over the defaults", () => {

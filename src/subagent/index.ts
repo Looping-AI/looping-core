@@ -99,9 +99,9 @@ const cachedResultSchema = z.discriminatedUnion("status", [
  * worker entry (`src/index.ts`) so `ctx.exports` can resolve it by class name.
  *
  * It never constructs a Session, never reads parent history beyond the
- * references supplied on its request, never uses recall or durable memory, and
- * never resolves a Recipe itself — it defensively re-validates the resolved
- * Recipe the parent sends and accepts no configuration beyond it.
+ * references supplied on its request, never reaches durable memory, and never
+ * resolves a Recipe itself — it defensively re-validates the resolved Recipe the
+ * parent sends and accepts no configuration beyond it.
  *
  * Retry safety: the child persists at most one terminal result in its own
  * SQLite, keyed by the deterministic request fingerprint, plus the rolling
