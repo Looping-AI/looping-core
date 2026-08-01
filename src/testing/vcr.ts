@@ -1,7 +1,7 @@
 import { MockAgent, SnapshotAgent, type Dispatcher } from "undici";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { VCR_CONTROL_ORIGIN, CASSETTE_NAME_RE } from "./vcr-shared";
+import { VCR_CONTROL_ORIGIN, CASSETTE_NAME_RE } from "./vcr-shared.js";
 
 /**
  * undici stamps every cassette entry with two volatile fields we never want

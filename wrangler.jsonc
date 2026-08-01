@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Dev-only. `@looping/core` is a library and never deploys — this config
+  // exists so `@cloudflare/vitest-pool-workers` has a Worker to bind, and so
+  // `wrangler types` can generate the ambient `Cloudflare.Env` that
+  // `test/worker.ts` types itself against. It is excluded from the published
+  // tarball by `package.json`'s `files` allowlist; a consumer brings their own.
+  "name": "looping-core-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-07-01",
+
+  // The Agents SDK reaches for Node builtins (`node:async_hooks` among others),
+  // and `AgentDB` runs Drizzle's durable-sqlite migrator. Both need this.
+  "compatibility_flags": ["nodejs_compat"],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "TEST_AGENT", "class_name": "TestAgent" },
+      { "name": "TEST_SUBAGENT", "class_name": "TestSubagent" }
+    ]
+  },
+
+  // `new_sqlite_classes`, not `new_classes`: `AgentDB` talks to `ctx.storage.sql`
+  // (see `src/db/db.ts`), which only exists on a SQLite-backed Durable Object.
+  // A key-value DO fails at the first migration.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TestAgent", "TestSubagent"]
+    }
+  ]
+}

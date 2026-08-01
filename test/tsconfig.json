@@ -1,0 +1,18 @@
+{
+  // The test-side project. Separate from the root config because tests may see
+  // things `src/` deliberately cannot: the `cloudflare:test` module, and the
+  // ambient `Cloudflare.Env` that `wrangler types` generates from
+  // `wrangler.jsonc`. `npm run check` typechecks both projects, so a spec that
+  // drifts from the source fails the build.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types",
+      "node"
+    ]
+  },
+  // Only the test host and the build config. Specs co-located under `src/` are
+  // covered by the root project — see the note there about eslint's resolution.
+  "include": ["./**/*.ts", "../vitest.config.ts", "../worker-configuration.d.ts"]
+}

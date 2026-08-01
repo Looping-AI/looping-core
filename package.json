@@ -48,6 +48,14 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
     },
+    "./testing/node": {
+      "types": "./dist/testing/node.d.ts",
+      "import": "./dist/testing/node.js"
+    },
+    "./testing/vcr-global-setup": {
+      "types": "./dist/testing/vcr-global-setup.d.ts",
+      "import": "./dist/testing/vcr-global-setup.js"
+    },
     "./eslint": "./eslint-rules/index.js",
     "./package.json": "./package.json"
   },

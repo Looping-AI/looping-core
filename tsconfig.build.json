@@ -8,5 +8,9 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*.ts"]
+  // Specs live next to the code they test, so they must be excluded explicitly
+  // or `dist/` ships them — and with them `vitest` and `cloudflare:test` imports
+  // in a consumer's runtime graph.
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts"]
 }

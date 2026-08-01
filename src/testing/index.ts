@@ -3,26 +3,25 @@
  * a consumer does not grow it a third time.
  *
  * Never import this from runtime code. It is a separate subpath precisely so it
- * cannot reach a production bundle, and it pulls in `cloudflare:test`, `undici`,
- * and `node:fs`, none of which exist in a deployed Worker.
+ * cannot reach a production bundle, and it pulls in `cloudflare:test`, which
+ * does not exist in a deployed Worker.
+ *
+ * **This barrel is the workerd half** — safe to import from a spec. The VCR
+ * recorder needs `undici` and `node:fs`, so it lives behind
+ * `@looping/core/testing/node` and must not be re-exported here: pulling it into
+ * this graph would drag Node builtins into every spec that wanted a fixture.
+ * `vcr-shared.ts` is the seam both realms may load.
  *
  * Three things live here:
  *
- * - **VCR** — record/replay of real HTTP against on-disk cassettes, split across
- *   the Node and workerd realms because specs run in workerd, which has no
- *   filesystem. Zero project knowledge.
+ * - **VCR (spec side)** — `setupRecording()`, which names a cassette per test and
+ *   talks to the Node-side recorder over the in-band control channel.
  * - **Fakes** — a `SessionLike` reference implementation and a scripted
  *   `LanguageModel`, so a loop can be driven with no model call at all.
  * - **Fixtures** — Ed25519 keypairs and a gateway-JWT signer, so the zero-trust
  *   path can be exercised end to end without a real gateway.
  */
 
-export {
-  createVcrAgent,
-  closeVcr,
-  VcrAgent,
-  type CreateVcrAgentOptions
-} from "./vcr.js";
 export { setupRecording, cassetteNameFor } from "./vcr-spec.js";
 export { VCR_CONTROL_ORIGIN, CASSETTE_NAME_RE } from "./vcr-shared.js";
 
