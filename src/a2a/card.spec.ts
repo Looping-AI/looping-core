@@ -25,13 +25,19 @@ import { AGENT_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "../testing/fixtures.js";
  * decoding it once, every signature fails in production while every local
  * round-trip looks fine.
  *
- * `SecurityScheme` is the card's only protobuf *oneof*, and it is exactly where
- * the property breaks: `fromJSON` reads the wire spelling
+ * `SecurityScheme` is the card's only protobuf *oneof*, and it used to be where
+ * the property broke: older SDK releases had `fromJSON` read the wire spelling
  * (`{ httpAuthSecurityScheme: … }`) and not the decoded `$case` form, so a second
- * decode collapses the scheme to `{}`. Both behaviors are pinned below — the safe
- * default and the known-broken opt-in — so that the day the SDK makes `fromJSON`
- * idempotent, the second test fails and tells whoever is reading that
- * `advertiseSecuritySchemes` can finally default to `true`.
+ * decode collapsed the scheme to `{}` and the signature failed. That is the
+ * reason `advertiseSecuritySchemes` defaults to `false`.
+ *
+ * **Under the pinned `@a2a-js/sdk` (1.0.1) it no longer breaks.** The specs below
+ * pin the property in the positive for *both* settings — schemes omitted and
+ * schemes advertised — and additionally that an advertised-schemes signature
+ * survives the double decode `looping-gateway`'s `canonicalCardPayload` performs.
+ * So these tests now serve two purposes: they guard the fixed point, and they are
+ * the evidence for flipping the default. If a later SDK regresses the oneof, the
+ * advertised-schemes cases fail and the default must stay where it is.
  */
 
 const manifest: AgentManifest = {
