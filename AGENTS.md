@@ -4,7 +4,7 @@ This package is the mandatory floor under every Looping agent. It is consumed by
 [`looping-plugins`](https://github.com/Looping-AI/looping-plugins) (optional,
 composable capabilities) and
 [`looping-starter`](https://github.com/Looping-AI/looping-starter) (the app that
-composes them). See `PLAN.md` for what belongs here and what does not.
+composes them).
 
 Because this is a **published npm package**, most mistakes are invisible in this
 repo and only fail at a consumer's build. The constraints below exist for that

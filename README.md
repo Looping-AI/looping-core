@@ -266,8 +266,7 @@ across the three repos use `file:` overrides, or `npm pack` plus a tarball insta
 
 ## Contributing
 
-[`AGENTS.md`](./AGENTS.md) documents the constraints this package is guardian of;
-[`PLAN.md`](./PLAN.md) covers what belongs here and what does not.
+[`AGENTS.md`](./AGENTS.md) documents the constraints this package is guardian of.
 
 ```bash
 npm run check           # prettier + eslint + tsc (src) + tsc (test) + build

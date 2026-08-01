@@ -34,7 +34,6 @@
     "eslint-rules",
     "scripts/generate-keys.mjs",
     "README.md",
-    "PLAN.md",
     "LICENSE"
   ],
   "exports": {
