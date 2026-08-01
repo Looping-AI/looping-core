@@ -206,7 +206,8 @@ export function createAgentRuntime(
     mainAgentTools(): ToolSet {
       const tools: ToolSet = {};
       for (const plugin of plugins) {
-        if (plugin.mainAgentTools) Object.assign(tools, plugin.mainAgentTools());
+        if (plugin.mainAgentTools)
+          Object.assign(tools, plugin.mainAgentTools());
       }
       return tools;
     },

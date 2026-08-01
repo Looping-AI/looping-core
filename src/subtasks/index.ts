@@ -27,9 +27,6 @@ export {
 
 export { selectWave, type WaveDecision } from "./scheduler.js";
 
-export {
-  isCatalogEligible,
-  type ReferenceCatalogEntry
-} from "./catalog.js";
+export { isCatalogEligible, type ReferenceCatalogEntry } from "./catalog.js";
 
 export * from "./types.js";

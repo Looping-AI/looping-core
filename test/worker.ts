@@ -44,7 +44,9 @@ export function setSubagentRuntime(runtime: SubagentRuntime): void {
 export class TestSubagent extends RecipeSubagentBase<Cloudflare.Env> {
   protected subagentRuntime(): SubagentRuntime {
     if (!testRuntime) {
-      throw new Error("test subagent runtime not set — call setSubagentRuntime");
+      throw new Error(
+        "test subagent runtime not set — call setSubagentRuntime"
+      );
     }
     return testRuntime;
   }

@@ -164,7 +164,9 @@ describe("verifyGatewayToken", () => {
   });
 
   it("rejects a token minted for a different audience", async () => {
-    const token = await makeGatewayToken({ audience: "https://elsewhere.test" });
+    const token = await makeGatewayToken({
+      audience: "https://elsewhere.test"
+    });
 
     await expect(
       verifyGatewayToken(token, {

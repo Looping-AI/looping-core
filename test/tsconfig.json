@@ -14,5 +14,9 @@
   },
   // Only the test host and the build config. Specs co-located under `src/` are
   // covered by the root project — see the note there about eslint's resolution.
-  "include": ["./**/*.ts", "../vitest.config.ts", "../worker-configuration.d.ts"]
+  "include": [
+    "./**/*.ts",
+    "../vitest.config.ts",
+    "../worker-configuration.d.ts"
+  ]
 }

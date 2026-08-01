@@ -9,7 +9,7 @@
 contract, the durable task lifecycle, the delegation and subagent runtime, and the test
 harness.
 
-**Rule of admission.** A file belongs here only if *every* agent needs it, or if it
+**Rule of admission.** A file belongs here only if _every_ agent needs it, or if it
 defines a type a plugin must implement. Anything optional is a plugin. Anything
 opinionated is the starter's.
 
@@ -20,7 +20,7 @@ opinionated is the starter's.
 Two predecessor repos, `proactive-agent` and `proactive-agent`'s hard fork
 `reactive-agent` (fork commit `9f380c7`), each ran ~27 commits independently. **Both are
 now legacy/deprecated** — nothing migrates onto core, no live DO data is at stake. Core is
-built greenfield and *mines* both for the better implementation of each concern.
+built greenfield and _mines_ both for the better implementation of each concern.
 
 What the fork left behind is the charter for this package:
 
@@ -59,17 +59,17 @@ eslint/         no-deprecated-object-properties
 Same discipline `looping-plugins` uses, for the same reason, plus `/testing` and `/eslint`
 must never enter the runtime graph.
 
-| Subpath | Contents | ~LOC |
-|---|---|---|
-| `@looping/core` | `contract.ts`, `createAgentRuntime`, shared types | 300 |
-| `@looping/core/a2a` | card signing, JWKS, gateway-JWT verify, push notify, task store, executor | 1,000 |
-| `@looping/core/worker` | `createA2AWorker({ manifest, agent, workflow, … })` | 250 |
-| `@looping/core/agent` | session, history, model, inference, budget, control, final-reply | 870 |
-| `@looping/core/subtasks` | delegation types, decomposition, delegate tool, wave scheduler | 1,000 |
-| `@looping/core/subagent` | `RecipeSubagent`, `runResumableChunk`, fingerprint, prompt | 1,150 |
-| `@looping/core/db` | `AgentDB`, `notify_tasks` + `subtasks` schema/models, migrations | 750 |
-| `@looping/core/testing` | VCR (361), mock-model, `FakeSession`, DO helpers, JWK fixtures | 680 |
-| `@looping/core/eslint` | the custom rule | 81 |
+| Subpath                  | Contents                                                                  | ~LOC  |
+| ------------------------ | ------------------------------------------------------------------------- | ----- |
+| `@looping/core`          | `contract.ts`, `createAgentRuntime`, shared types                         | 300   |
+| `@looping/core/a2a`      | card signing, JWKS, gateway-JWT verify, push notify, task store, executor | 1,000 |
+| `@looping/core/worker`   | `createA2AWorker({ manifest, agent, workflow, … })`                       | 250   |
+| `@looping/core/agent`    | session, history, model, inference, budget, control, final-reply          | 870   |
+| `@looping/core/subtasks` | delegation types, decomposition, delegate tool, wave scheduler            | 1,000 |
+| `@looping/core/subagent` | `RecipeSubagent`, `runResumableChunk`, fingerprint, prompt                | 1,150 |
+| `@looping/core/db`       | `AgentDB`, `notify_tasks` + `subtasks` schema/models, migrations          | 750   |
+| `@looping/core/testing`  | VCR (361), mock-model, `FakeSession`, DO helpers, JWK fixtures            | 680   |
+| `@looping/core/eslint`   | the custom rule                                                           | 81    |
 
 ≈ **6,000 lines.** Roughly reactive's agent/subagent/db plus proactive's a2a/worker.
 
@@ -79,24 +79,24 @@ must never enter the runtime graph.
 
 Paths are relative to `../reactive-agent` (R) and `../proactive-agent` (P).
 
-| Target | Take from | Why |
-|---|---|---|
-| `a2a/verify.ts` | either (identical) | Make `IDENTITY_CLAIM` config, not a hardcoded `https://looping.ai/identity`. Generalize `GatewayIdentity` |
-| `a2a/card.ts` | **P structure + R's `securitySchemes`** | P is newer and argues the fixed-point property; R's decision to advertise `gatewayJwt` wins. `buildBaseCard(manifest, origin)` — manifest injected, not imported (kills `R:a2a/card.ts:7`) |
-| `a2a/{notify,task,task-store,executor,parts,context}.ts` | **P** | P is on A2A v1.0: `V1PushNotificationSerializer`, `ListTasks` offset paging + filters, `SendMessageRequest.fromJSON`, `ServerCallContext` bridge. P's `parts.ts` supersedes R's thinner `a2a/inbound.ts` |
-| `worker/` | **P** `src/index.ts` → `createA2AWorker({...})` | P adds `validateVersion` enforcement, `jsonRpcErrorResponse`, extension response headers |
-| `db/models/tasks.ts`, `notify_tasks` | **R** + P's `list`/`count`/`context_id` | See "task_json" below |
-| `agent/{session,history,model,inference,budget,control,final-reply}.ts` | **R** | R has deterministic Session message ids, `appendOnce`, `ControlTool`, `TurnBudget`, `GatewayMetadata`, reasoning-effort. `inference.ts` is literally extracted from P's `loop.ts` — take R's factored version |
-| `subtasks/*`, `subtasks` table | **R** | No P analog |
-| `subagent/*` | **R** | No P analog. `run.ts` already takes 100% injected deps — the cleanest big lift in either repo |
-| `platform.ts` | **R** | Ships unchanged |
-| `testing/` | **R** (VCR, `FakeSession`) + **P** (`MockLanguageModelV4`) | VCR is 361 LOC with zero project coupling |
-| `eslint/` | either (identical) | |
+| Target                                                                  | Take from                                                  | Why                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a2a/verify.ts`                                                         | either (identical)                                         | Make `IDENTITY_CLAIM` config, not a hardcoded `https://looping.ai/identity`. Generalize `GatewayIdentity`                                                                                                     |
+| `a2a/card.ts`                                                           | **P structure + R's `securitySchemes`**                    | P is newer and argues the fixed-point property; R's decision to advertise `gatewayJwt` wins. `buildBaseCard(manifest, origin)` — manifest injected, not imported (kills `R:a2a/card.ts:7`)                    |
+| `a2a/{notify,task,task-store,executor,parts,context}.ts`                | **P**                                                      | P is on A2A v1.0: `V1PushNotificationSerializer`, `ListTasks` offset paging + filters, `SendMessageRequest.fromJSON`, `ServerCallContext` bridge. P's `parts.ts` supersedes R's thinner `a2a/inbound.ts`      |
+| `worker/`                                                               | **P** `src/index.ts` → `createA2AWorker({...})`            | P adds `validateVersion` enforcement, `jsonRpcErrorResponse`, extension response headers                                                                                                                      |
+| `db/models/tasks.ts`, `notify_tasks`                                    | **R** + P's `list`/`count`/`context_id`                    | See "task_json" below                                                                                                                                                                                         |
+| `agent/{session,history,model,inference,budget,control,final-reply}.ts` | **R**                                                      | R has deterministic Session message ids, `appendOnce`, `ControlTool`, `TurnBudget`, `GatewayMetadata`, reasoning-effort. `inference.ts` is literally extracted from P's `loop.ts` — take R's factored version |
+| `subtasks/*`, `subtasks` table                                          | **R**                                                      | No P analog                                                                                                                                                                                                   |
+| `subagent/*`                                                            | **R**                                                      | No P analog. `run.ts` already takes 100% injected deps — the cleanest big lift in either repo                                                                                                                 |
+| `platform.ts`                                                           | **R**                                                      | Ships unchanged                                                                                                                                                                                               |
+| `testing/`                                                              | **R** (VCR, `FakeSession`) + **P** (`MockLanguageModelV4`) | VCR is 361 LOC with zero project coupling                                                                                                                                                                     |
+| `eslint/`                                                               | either (identical)                                         |                                                                                                                                                                                                               |
 
 ### Two settled conflicts
 
-**`card.ts` `securitySchemes` — advertised.** P *deliberately omits* it (documented: the
-served card must be a fixed point under repeated `fromJSON`); R *deliberately advertises*
+**`card.ts` `securitySchemes` — advertised.** P _deliberately omits_ it (documented: the
+served card must be a fixed point under repeated `fromJSON`); R _deliberately advertises_
 `gatewayJwt`. R wins on the behavior. **Keep P's fixed-point property as a pinned test** —
 that's the part worth preserving from P's argument.
 
@@ -129,8 +129,8 @@ class internals.
   with no Recipe; the starter supplies its soul exactly as a plugin supplies a subagent's.
 - `config.ts` **values** (model ids, budgets, limits). Core ships the shapes.
 - Vectorize recall, browser tools, `@cloudflare/shell` — all optional → plugins.
-- `WorkspaceHandle` is a **split**: the *interface* is core (`ToolFamilyContext` references
-  it), the `@cloudflare/shell`-backed *implementation* is `@looping/plugins/workspace`.
+- `WorkspaceHandle` is a **split**: the _interface_ is core (`ToolFamilyContext` references
+  it), the `@cloudflare/shell`-backed _implementation_ is `@looping/plugins/workspace`.
 
 ---
 
@@ -151,7 +151,7 @@ Both get pinned tests before anything else lands.
 Everything else in this repo is file moves. This is the actual work, and it is
 **done in `../reactive-agent` first**, where the 13.3k-line test suite already runs.
 
-Today the recipe registry resolves at *import time*:
+Today the recipe registry resolves at _import time_:
 
 - `recipes/index.ts` exports a frozen `SUBTASK_TYPE_SPECS` array
 - → `subtask-types.ts` builds `SUBTASK_TYPES` / `SUBTASK_TYPE_KEYS` as module consts
@@ -161,7 +161,7 @@ Today the recipe registry resolves at *import time*:
 - → `validation.ts:37` hardcodes `KNOWN_TOOL_FAMILIES = Set(["browser","workspace","arc-game"])`
 - → `config.ts` is statically imported by ~12 modules
 
-Module-load-time registry reads defeat tree-shaking *and* runtime plugin selection — and
+Module-load-time registry reads defeat tree-shaking _and_ runtime plugin selection — and
 they're wrong on Workers anyway, where `env` doesn't exist at module scope. One fix:
 
 ```ts
@@ -235,8 +235,8 @@ types. CI always installs from the registry so a link-only-works build can never
 
 1. **Refactor in place in `../reactive-agent`** — `createAgentRuntime`, family map, plugin
    hooks on the DO, generic `SubtaskRuntime`. Arc-game becomes a local plugin under the new
-   contract, still in-repo. Suite stays green. *This is the risky step and it does not
-   happen in this repo.*
+   contract, still in-repo. Suite stays green. _This is the risky step and it does not
+   happen in this repo._
 2. **Fold in proactive's A2A v1.0 layer** (`parts.ts`, `context.ts`,
    `V1PushNotificationSerializer`, `ListTasks` paging, `validateVersion`,
    `SendMessageRequest.fromJSON`) while still in one tree, so core is born on the newer

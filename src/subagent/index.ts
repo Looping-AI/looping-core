@@ -22,10 +22,7 @@ import {
   type SubtaskTypeRegistry
 } from "../subtasks/subtask-types.js";
 import { renderSubagentPrompt } from "./prompt.js";
-import {
-  makeWorkspaceHandle,
-  type WorkspaceBacking
-} from "./workspace.js";
+import { makeWorkspaceHandle, type WorkspaceBacking } from "./workspace.js";
 import { fingerprintRequest } from "./fingerprint.js";
 import { runResumableChunk, type ChunkRunState } from "./run.js";
 

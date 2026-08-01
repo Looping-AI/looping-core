@@ -9,10 +9,7 @@ import { generateText, isStepCount } from "ai";
 import { CHUNK_SOFT_MS } from "../platform.js";
 import { stepAllowance } from "../agent/budget.js";
 import { isTransientAiError } from "../agent/inference.js";
-import {
-  validateRecipe,
-  type RecipePolicy
-} from "../contract/validation.js";
+import { validateRecipe, type RecipePolicy } from "../contract/validation.js";
 import type { ModelPair } from "../agent/model.js";
 import type {
   ProgressEvent,

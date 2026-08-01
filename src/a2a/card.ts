@@ -134,9 +134,7 @@ export function buildBaseCard(
     // v0.3's `security: [{ gatewayJwt: [] }]`. The empty `list` means the scheme
     // is required but carries no scopes. Safe to advertise unconditionally: this
     // is a plain map, so it survives the round trip that eats `securitySchemes`.
-    securityRequirements: [
-      { schemes: { [GATEWAY_SCHEME_ID]: { list: [] } } }
-    ],
+    securityRequirements: [{ schemes: { [GATEWAY_SCHEME_ID]: { list: [] } } }],
     signatures: []
   };
 }

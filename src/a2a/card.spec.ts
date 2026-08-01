@@ -13,10 +13,7 @@ import {
   wireCard,
   type AgentManifest
 } from "./card.js";
-import {
-  AGENT_ORIGIN,
-  TEST_AGENT_PRIVATE_JWK
-} from "../testing/fixtures.js";
+import { AGENT_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "../testing/fixtures.js";
 
 /**
  * The second guardian: **the served AgentCard is a fixed point under repeated
@@ -44,8 +41,7 @@ const manifest: AgentManifest = {
   capabilities: {
     streaming: true,
     pushNotifications: true,
-    extensions: [],
-    stateTransitionHistory: false
+    extensions: []
   },
   defaultInputModes: ["text/plain"],
   defaultOutputModes: ["text/plain"],
