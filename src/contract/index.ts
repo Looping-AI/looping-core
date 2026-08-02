@@ -11,11 +11,13 @@ export {
   type AgentPlugin,
   type EmitProgress,
   type EnrichResultContext,
+  type MainAgentToolContext,
   type PluginRequirements,
   type RecipeToolSet,
   type ResolveRuntimeContext,
   type ToolFamilyBuilder,
-  type ToolFamilyContext
+  type ToolFamilyContext,
+  type TurnGateContext
 } from "./plugin.js";
 
 export type {

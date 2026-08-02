@@ -207,10 +207,40 @@ its cause.
 The contract is **additive-only within a major**: new capabilities arrive as optional
 fields on `AgentPlugin`.
 
-The one session hook core offers is `onMessagesDisplaced` — the raw messages a compaction
-is about to fold into a summary. Core performs the compaction, so core announces the loss;
-it neither stores the messages nor knows who wants them. An episodic-memory plugin, an
-audit log, and a cold-storage dump all want exactly this callback, and each gets it:
+### Plugin-owned tables
+
+A plugin owns its tables outright, through `store: PluginStore` — but it must stay out of
+core's migration journal. `drizzle-orm/durable-sqlite/migrator` keeps one flat integer
+journal and one global `__drizzle_migrations` table, and two independently-versioned
+packages cannot share that index space.
+
+That is a prohibition on exactly **one import**, not on drizzle. The query builder holds
+no journal and no connection state, so a plugin declares its tables with `sqliteTable`,
+writes idempotent DDL in `ensureTables`, and queries through its own handle:
+
+```ts
+export const scrapes = sqliteTable("scraper_scrapes", { url: text("url").primaryKey() });
+
+store: {
+  plugin: "scraper",
+  version: 1,
+  // Re-run on every hibernation wake-up, so it must be idempotent.
+  ensureTables: (sql) => sql.exec(`CREATE TABLE IF NOT EXISTS scraper_scrapes (…)`)
+}
+
+// …and anywhere the plugin queries:
+const db = drizzle(storage, { schema: { scrapes } });
+```
+
+Core records each store's version in a `plugin_migrations` row, so `ensureTables` receives
+the version last seen on disk and an upgrade path can branch on it.
+
+### Session hooks
+
+`onMessagesDisplaced` hands over the raw messages a compaction is about to fold into a
+summary. Core performs the compaction, so core announces the loss; it neither stores the
+messages nor knows who wants them. An episodic-memory plugin, an audit log, and a
+cold-storage dump all want exactly this callback, and each gets it:
 
 ```ts
 // in your DO, wiring the runtime's fan-out into the session
@@ -223,6 +253,30 @@ buildAgentSession(this, model, {
 Best-effort in both directions — a listener that throws never aborts compaction (history
 must still shorten when a side store is down), and the fan-out is `Promise.allSettled`, so
 one plugin's outage cannot cost another its notification.
+
+`shouldHandleTurn` is the other side of the session: a gate that decides whether a turn
+runs at all, before the loop builds or calls anything. An agent that sees every message in
+its channels is mostly seeing messages that are not for it, and asking a model already
+trying to be helpful to stay quiet degrades _invisibly_ — failing to call a decline-tool
+looks identical to deciding not to. Every declaring plugin is consulted and the answers are
+AND-ed, so any one gate may decline.
+
+```ts
+if (!(await this.runtime.shouldHandleTurn({ history }))) return; // declined
+```
+
+It **fails open**: a gate that throws is counted as `true`. The two mistakes are not
+symmetric — a wrong reply is noise the user can see and ignore, while a wrong silence is
+invisible to the person who needed an answer.
+
+### The workspace backend
+
+Core declares the `WorkspaceBacking` shape and enforces the caps, but ships no backend —
+the predecessor's was `@cloudflare/shell`, which is experimental, and an agent that never
+delegates file work should not carry it. A plugin supplies one via `workspaceBacking`; at
+most one may, and an agent that installs none gets `memoryWorkspaceBacking`. So
+`runtime.workspaceBacking` is always defined and your `SubagentRuntime` never needs a null
+check.
 
 ---
 

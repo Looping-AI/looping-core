@@ -1,7 +1,11 @@
 import type { ToolSet } from "ai";
 import type { SessionMessage } from "agents/experimental/memory/session";
+import type { SessionLike } from "../agent/session.js";
 import type { PluginStore } from "../db/db.js";
-import type { WorkspaceHandle } from "../subagent/workspace.js";
+import type {
+  WorkspaceBacking,
+  WorkspaceHandle
+} from "../subagent/workspace.js";
 import type {
   ProgressEvent,
   RecipeExecutionRequest,
@@ -104,6 +108,36 @@ export interface EnrichResultContext<TRuntime = SubtaskRuntime> {
   runtime: TRuntime;
 }
 
+/**
+ * What a plugin knows when it builds the *main* agent's tools.
+ *
+ * Deliberately just the session, and deliberately not the caller's identity. A
+ * plugin that needs a per-caller value takes it as config at instantiation, like
+ * every other config value — the Durable Object is keyed 1:1 by the verified
+ * caller, so that value is constant for its life. Putting it here as well would
+ * give a plugin two ways to reach one fact, and the *other* hook that needs it
+ * ({@link AgentPlugin.onMessagesDisplaced}) has no context to read it from
+ * anyway.
+ *
+ * What the session gives that config cannot is **durable state the tool surface
+ * depends on** — whether history has ever been compacted, how many contexts are
+ * set. That is a question only the session can answer, and only at call time.
+ */
+export interface MainAgentToolContext {
+  session: SessionLike;
+}
+
+/** What a plugin knows when deciding whether a turn should run at all. */
+export interface TurnGateContext {
+  /**
+   * The conversation so far, **including the message being judged** — which is
+   * already appended when a gate runs, so the agent reads a message it declines.
+   * A bare message is frequently unclassifiable ("yes", "thanks", "and the
+   * second one?"), so the tail is what makes the judgement possible at all.
+   */
+  history: SessionMessage[];
+}
+
 /** Bindings and secrets a plugin needs the *host* to provide in `wrangler.jsonc`. */
 export interface PluginRequirements {
   /** Secret names, e.g. `["ARC_API_KEY"]`. */
@@ -138,11 +172,25 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
 
   // --- main-agent side ---
 
-  /** Tools offered to the *main* agent (e.g. a catalogue lookup before delegating). */
-  mainAgentTools?: () => ToolSet;
+  /**
+   * Tools offered to the *main* agent (e.g. a catalogue lookup before
+   * delegating).
+   *
+   * May return a promise, so a plugin can shape its tool surface from durable
+   * state — offering a search tool only once there is something to search, say.
+   * A tool that can only ever return "nothing here yet" costs the model a call to
+   * find that out, and costs every round the tokens to describe it.
+   */
+  mainAgentTools?: (ctx: MainAgentToolContext) => ToolSet | Promise<ToolSet>;
   /**
    * What the main agent is told it can do with this domain, rendered into its
    * soul alongside the other capability blocks.
+   *
+   * A plugin that declares a {@link subtaskType} should put its capability block
+   * on the *type* instead ({@link SubtaskTypeSpec.capability}) and leave this
+   * unset — the two are rendered by different call sites, so declaring both
+   * makes the main agent read the same advice twice per round. Which is the
+   * exact failure the type's own prompt fields were introduced to end.
    */
   capability?: string;
 
@@ -171,6 +219,29 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
   // --- session lifecycle ---
 
   /**
+   * Decide whether a turn should run at all, before the loop builds or calls
+   * anything.
+   *
+   * An agent that sees every message in its channels is mostly seeing messages
+   * that are not for it. Left to the main loop that judgement is made by a model
+   * simultaneously trying to be helpful, with history and half a dozen tools in
+   * view, and it degrades exactly there — *invisibly*, because failing to call a
+   * decline-tool looks identical to deciding not to. A gate moves the decision
+   * somewhere it cannot be skipped.
+   *
+   * **Fails open, and the asymmetry is the whole design.** A gate that throws is
+   * counted as `true`, so an outage degrades to the previous behaviour (run the
+   * turn) and never to a silent agent: a wrong reply is noise the user can see
+   * and ignore, while a wrong silence is invisible — the person who needed the
+   * agent simply never hears back. Failing *synchronously* is as safe as
+   * rejecting.
+   *
+   * Every declaring plugin is consulted and the results are AND-ed: any one gate
+   * may decline the turn. Returning `true` is always valid.
+   */
+  shouldHandleTurn?: (ctx: TurnGateContext) => Promise<boolean>;
+
+  /**
    * The raw messages a compaction is about to fold into a summary, handed over
    * before they stop being readable as history.
    *
@@ -193,6 +264,27 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
 
   /** Tables this plugin owns, outside core's migration journal. See {@link PluginStore}. */
   store?: PluginStore;
+  /**
+   * The durable file store a subagent execution's workspace is built over.
+   *
+   * Core declares the {@link WorkspaceBacking} shape and enforces the caps, but
+   * ships no backend: the predecessor's was `@cloudflare/shell`, which is
+   * experimental ("expect breaking changes"), and an agent that never delegates
+   * file work should not carry it. So the backend arrives here, from a plugin,
+   * and an agent that installs none falls back to an in-memory one.
+   *
+   * At most one installed plugin may declare this — two backends would mean two
+   * answers to "where did that file go", and the file would be in whichever the
+   * runtime happened to pick.
+   *
+   * `sql` is the executing facet's own SQLite, so isolation per execution is
+   * free and deleting the child wipes the workspace with it. `name` is lazy
+   * because a facet's name is set after construction.
+   */
+  workspaceBacking?: (
+    sql: SqlStorage,
+    name: () => string | undefined
+  ) => WorkspaceBacking;
   /**
    * Bindings and secrets the host must declare in `wrangler.jsonc`. A plugin
    * cannot add its own binding, so declaring them lets startup fail with a

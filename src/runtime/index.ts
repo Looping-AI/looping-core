@@ -9,10 +9,16 @@ import {
   PLUGIN_CONTRACT_VERSION,
   type AgentPlugin,
   type EnrichResultContext,
+  type MainAgentToolContext,
   type ResolveRuntimeContext,
-  type ToolFamilyBuilder
+  type ToolFamilyBuilder,
+  type TurnGateContext
 } from "../contract/plugin.js";
 import type { PluginStore } from "../db/db.js";
+import {
+  memoryWorkspaceBacking,
+  type WorkspaceBacking
+} from "../subagent/workspace.js";
 import type { RecipePolicy } from "../contract/validation.js";
 import {
   makeSubtaskTypes,
@@ -62,16 +68,36 @@ export interface AgentRuntime {
   stores: readonly PluginStore[];
   /** Every binding and secret the installed plugins require of the host. */
   requirements: { secrets: string[]; bindings: string[] };
+  /**
+   * The subagent workspace backend — the one plugin that declared it, or an
+   * in-memory fallback when none did. Always defined, so a host writes
+   * `workspaceBacking: runtime.workspaceBacking` into its `SubagentRuntime`
+   * unconditionally.
+   */
+  workspaceBacking: (
+    sql: SqlStorage,
+    name: () => string | undefined
+  ) => WorkspaceBacking;
 
   /** The plugin that declared a subtask type, or null. */
   pluginForType(type: string): AgentPlugin | null;
   /** Tools the installed plugins offer the *main* agent, merged. */
-  mainAgentTools(): ToolSet;
+  mainAgentTools(ctx: MainAgentToolContext): Promise<ToolSet>;
   /**
    * Every plugin's `capability` block, for the main agent's soul. Returns `""`
    * when none declares one, so a call site can append unconditionally.
    */
   renderCapabilities(): string;
+  /**
+   * Ask every plugin declaring {@link AgentPlugin.shouldHandleTurn} whether this
+   * turn should run. `true` when none declares one, and `false` if any single
+   * gate declines.
+   *
+   * Never rejects: a gate that fails is logged against its plugin key and
+   * counted as `true`, because the failure mode of a broken gate must be a noisy
+   * agent, never a silent one.
+   */
+  shouldHandleTurn(ctx: TurnGateContext): Promise<boolean>;
   /**
    * Announce the messages a compaction is folding into a summary to every plugin
    * declaring {@link AgentPlugin.onMessagesDisplaced}. Pass it straight to
@@ -166,6 +192,22 @@ export function createAgentRuntime(
       : []
   );
 
+  const turnGates = plugins.flatMap((p) =>
+    p.shouldHandleTurn ? [{ key: p.key, gate: p.shouldHandleTurn.bind(p) }] : []
+  );
+
+  // At most one backend: two would mean two answers to "where did that file go".
+  const backings = plugins.flatMap((p) =>
+    p.workspaceBacking ? [{ key: p.key, make: p.workspaceBacking.bind(p) }] : []
+  );
+  if (backings.length > 1) {
+    throw new RuntimeSetupError(
+      `plugins ${backings.map((b) => `"${b.key}"`).join(" and ")} both declare a ` +
+        "workspaceBacking — an execution has one workspace, so only one plugin may back it"
+    );
+  }
+  const workspaceBacking = backings[0]?.make ?? memoryWorkspaceBacking;
+
   const secrets = [
     ...new Set(plugins.flatMap((p) => [...(p.requires?.secrets ?? [])]))
   ];
@@ -217,14 +259,18 @@ export function createAgentRuntime(
     policy,
     stores,
     requirements: { secrets, bindings },
+    workspaceBacking,
 
     pluginForType,
 
-    mainAgentTools(): ToolSet {
+    async mainAgentTools(ctx: MainAgentToolContext): Promise<ToolSet> {
       const tools: ToolSet = {};
+      // Sequential rather than fanned out: this is a handful of plugins reading
+      // one session, and merging in declaration order is what makes a name
+      // collision resolve the same way on every call.
       for (const plugin of plugins) {
         if (plugin.mainAgentTools)
-          Object.assign(tools, plugin.mainAgentTools());
+          Object.assign(tools, await plugin.mainAgentTools(ctx));
       }
       return tools;
     },
@@ -235,6 +281,33 @@ export function createAgentRuntime(
         if (plugin.capability) blocks.push(plugin.capability);
       }
       return blocks.join("\n\n");
+    },
+
+    async shouldHandleTurn(ctx: TurnGateContext): Promise<boolean> {
+      if (turnGates.length === 0) return true;
+      // Same `allSettled` + `async`-wrapped-callback discipline as
+      // `onMessagesDisplaced` below, and for the same two reasons: every gate is
+      // consulted even when one throws, and a gate that throws *synchronously*
+      // (reading a binding before its first await) is caught rather than
+      // escaping past the aggregation.
+      //
+      // A rejection resolves to `true`. That is not leniency — it is the only
+      // safe default here. A wrong reply is noise the user sees and ignores; a
+      // wrong silence is invisible to the person who needed an answer, so a
+      // broken gate must degrade to "run the turn" and never to a mute agent.
+      const results = await Promise.allSettled(
+        turnGates.map(async (g) => g.gate(ctx))
+      );
+      return results.every((result, i) => {
+        if (result.status === "rejected") {
+          console.warn(
+            `[runtime] plugin "${turnGates[i].key}" turn gate failed, handling the turn`,
+            result.reason
+          );
+          return true;
+        }
+        return result.value;
+      });
     },
 
     async onMessagesDisplaced(messages: SessionMessage[]): Promise<void> {

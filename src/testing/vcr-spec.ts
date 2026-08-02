@@ -26,17 +26,38 @@ function isFileTask(suite: RunnerTestSuite): boolean {
 }
 
 /**
- * Cassette filename for a test: `kebab(<file rel to test/, minus .spec.ts>)`
- * then each describe level then the test name, all kebab-cased and joined by
- * `--`, plus `.snapshot.json`. Example:
- * `recipes-arc-game-recorded--arc-game-recorded-real-api--starts-a-real-game-and-closes-the-scorecard-on-abort.snapshot.json`.
+ * The spec's path relative to the project root.
+ *
+ * Vitest already computes this as `file.name`, which is the whole answer: it is
+ * stable across machines and checkouts, and it is *unique per spec file*, which
+ * is what a cassette name has to be.
+ *
+ * Deriving it from `filepath` instead — by stripping a leading `test/` or
+ * `src/` — got this wrong twice. Splitting on a segment that never matched
+ * returned the absolute path unchanged, so a cassette was named after the
+ * developer's home directory; and stripping *both* roots collapsed
+ * `test/api.spec.ts` and `src/api.spec.ts` onto one name, which for a store
+ * keyed solely by filename means one recording silently overwrites the other
+ * and playback serves the wrong responses.
+ *
+ * The fallback is only for a runner that does not populate `name`; a bare
+ * filename can still collide, but it is strictly better than an absolute path
+ * and nothing here reaches it.
+ */
+function relativeSpecPath(file: RunnerTestCase["file"]): string {
+  if (typeof file.name === "string" && file.name !== "") return file.name;
+  return file.filepath.replace(/\\/g, "/").split("/").pop()!;
+}
+
+/**
+ * Cassette filename for a test: `kebab(<project-relative path, minus
+ * .spec.ts>)` then each describe level then the test name, all kebab-cased and
+ * joined by `--`, plus `.snapshot.json`. Example:
+ * `test-arc-agi-recorded--arc-recorded-real-api--plays-a-real-game.snapshot.json`.
  * Exported for debugging / the cassette-rename step.
  */
 export function cassetteNameFor(task: RunnerTestCase): string {
-  const rel = task.file.filepath
-    .split(/[\\/]test[\\/]/)
-    .pop()!
-    .replace(/\.spec\.ts$/, "");
+  const rel = relativeSpecPath(task.file).replace(/\.spec\.ts$/, "");
 
   const suites: string[] = [];
   let suite: RunnerTestSuite | undefined = task.suite;
@@ -62,9 +83,9 @@ export function setupRecording(): void {
     });
     if (res.status === 404) {
       throw new Error(
-        `No VCR cassette "${cassette}". Record it with \`npm run test:record\` ` +
-          `(add \`-- -t "${ctx.task.name}"\` to record only this test), which ` +
-          `needs a real ARC_API_KEY in .env.test.`
+        `No VCR cassette "${cassette}". Record it with \`RECORD=1\` ` +
+          `(add \`-t "${ctx.task.name}"\` to record only this test), which needs ` +
+          `whatever real credentials the recorded API calls require.`
       );
     }
     if (res.status === 409) {

@@ -13,23 +13,37 @@ export type DB = DrizzleSqliteDODatabase<typeof schema>;
 /**
  * A table owner outside core's migration journal.
  *
- * Drizzle's durable-sqlite migrator keeps **one flat integer journal** and one
- * global `__drizzle_migrations` table. Two independently-versioned npm packages
- * cannot share that index space — and this is not hypothetical: the two
- * predecessor agents, both consuming the same `notify_tasks` module, had already
- * forked the journal at index 1 (`0001_unusual_nova` vs `0001_great_goliath`).
- * Worse, `drizzle-kit generate` diffs against a snapshot in one output
- * directory, so a plugin shipping from its own repo cannot produce a correct
- * diff at all.
+ * What a plugin cannot share is the **migrator**. `drizzle-orm/durable-sqlite/
+ * migrator` keeps one flat integer journal and one global
+ * `__drizzle_migrations` table, and two independently-versioned npm packages
+ * cannot share that index space — not hypothetically: the two predecessor
+ * agents, both consuming the same `notify_tasks` module, had already forked the
+ * journal at index 1 (`0001_unusual_nova` vs `0001_great_goliath`). Worse,
+ * `drizzle-kit generate` diffs against a snapshot in one output directory, so a
+ * plugin shipping from its own repo cannot produce a correct diff at all.
  *
- * So a plugin never touches core's journal. It implements this instead:
- * idempotent `CREATE TABLE IF NOT EXISTS` DDL, plus its own version bookkeeping
- * in the {@link PLUGIN_MIGRATIONS_TABLE} row this class manages for it. That
- * pattern is not novel here — it is what the subagent facet already does for its
- * own two tables.
+ * **The query builder is a different thing entirely, and a plugin should use
+ * it.** `drizzle(storage, { schema })` is a typed wrapper over the same
+ * `DurableObjectStorage`; it holds no journal, no connection, and no state that
+ * a second handle could disturb. So the rule is narrow — *never import the
+ * migrator* — rather than "no drizzle".
+ *
+ * A plugin therefore does three things: declares its tables with `sqliteTable`
+ * as usual, emits idempotent DDL here, and queries through its own drizzle
+ * handle. Version bookkeeping lives in the {@link PLUGIN_MIGRATIONS_TABLE} row
+ * this class manages for it. Only the DDL is hand-written, and that pattern is
+ * not novel here — it is what the subagent facet already does for its own two
+ * tables.
  *
  * ```ts
- * const scorecardStore: PluginStore = {
+ * // schema.ts — an ordinary drizzle table, under the plugin's own prefix.
+ * export const arcScorecards = sqliteTable("arc_scorecards", {
+ *   cardId: text("card_id").primaryKey(),
+ *   lastUsedAt: integer("last_used_at").notNull()
+ * });
+ *
+ * // The DDL half: idempotent, re-run on every hibernation wake-up.
+ * const store: PluginStore = {
  *   plugin: "arc-agi",
  *   version: 2,
  *   ensureTables(sql, from) {
@@ -37,6 +51,10 @@ export type DB = DrizzleSqliteDODatabase<typeof schema>;
  *     if (from < 2) sql.exec(`ALTER TABLE arc_scorecards ADD COLUMN …`);
  *   }
  * };
+ *
+ * // The query half: drizzle, over the plugin's own handle.
+ * const db = drizzle(storage, { schema: { arcScorecards } });
+ * db.select().from(arcScorecards).where(gte(arcScorecards.lastUsedAt, since));
  * ```
  */
 export interface PluginStore {

@@ -49,6 +49,79 @@ export interface WorkspaceBacking {
   getWorkspaceInfo(): Promise<{ fileCount: number }>;
 }
 
+/**
+ * An in-memory {@link WorkspaceBacking} — the fallback when no installed plugin
+ * declares one.
+ *
+ * Deliberately **not durable**, and that is the honest behaviour rather than a
+ * shortcut: a durable stand-in would have to invent a storage layout that a real
+ * backend would then have to migrate away from. An agent that delegates file
+ * work installs a backend; one that does not never writes a file, and pays
+ * nothing for the option. What this buys is that `createAgentRuntime` composes
+ * without a workspace plugin at all, so `SubagentRuntime.workspaceBacking` can
+ * stay required and a host never writes a null check.
+ *
+ * Scoped per call, so each execution gets its own map, exactly as a facet's own
+ * SQLite would give it its own tables. Contents are lost on isolate eviction —
+ * the resumable runner treats a lost workspace as a resumable state everywhere
+ * it matters.
+ *
+ * Signature matches {@link AgentPlugin.workspaceBacking}; both arguments are
+ * ignored.
+ */
+export function memoryWorkspaceBacking(
+  _sql?: SqlStorage,
+  _name?: () => string | undefined
+): WorkspaceBacking {
+  const files = new Map<string, string>();
+
+  /** Immediate children of `dir`, as `readDir` reports them. */
+  const entriesUnder = (dir: string): WorkspaceEntry[] => {
+    const prefix = dir === "" ? "" : `${dir}/`;
+    const seen = new Map<string, WorkspaceEntry>();
+    for (const [path, content] of files) {
+      if (!path.startsWith(prefix)) continue;
+      const rest = path.slice(prefix.length);
+      if (rest === "") continue;
+      const slash = rest.indexOf("/");
+      if (slash === -1) {
+        seen.set(path, {
+          path,
+          type: "file",
+          size: new TextEncoder().encode(content).length
+        });
+      } else {
+        // A directory exists only because something under it does, so report it
+        // once and say nothing about its size.
+        const child = `${prefix}${rest.slice(0, slash)}`;
+        seen.set(child, { path: child, type: "directory", size: 0 });
+      }
+    }
+    return [...seen.values()];
+  };
+
+  return {
+    readFile: async (path) => files.get(normalize(path)) ?? null,
+    writeFile: async (path, content) => {
+      files.set(normalize(path), content);
+    },
+    // Directories are implied by their contents, so a path with anything under
+    // it exists even though nothing ever created it.
+    exists: async (path) => {
+      const key = normalize(path);
+      return files.has(key) || entriesUnder(key).length > 0;
+    },
+    deleteFile: async (path) => files.delete(normalize(path)),
+    readDir: async (dir) => entriesUnder(normalize(dir ?? "")),
+    getWorkspaceInfo: async () => ({ fileCount: files.size })
+  };
+}
+
+/** Strip the leading/trailing slashes that would otherwise key two paths apart. */
+function normalize(path: string): string {
+  return path.replace(/^\/+|\/+$/g, "");
+}
+
 /** Per-file byte ceiling — safely under the 2 MB Durable Object SQLite row limit. */
 export const WORKSPACE_MAX_FILE_BYTES = 512 * 1024;
 /** Max number of files in one workspace — a cheap guard against runaway writes. */
@@ -80,13 +153,21 @@ export function makeWorkspaceHandle(ws: WorkspaceBacking): WorkspaceHandle {
           `file "${path}" is ${bytes} bytes, over the ${WORKSPACE_MAX_FILE_BYTES}-byte limit`
         );
       }
-      if (!(await ws.exists(path))) {
-        const { fileCount } = await ws.getWorkspaceInfo();
-        if (fileCount >= WORKSPACE_MAX_FILES) {
-          throw new WorkspaceLimitError(
-            `workspace already holds ${fileCount} files (max ${WORKSPACE_MAX_FILES})`
-          );
-        }
+      // The cap bounds how many files exist, so it may only refuse a write that
+      // *creates* one. `exists` is the wrong question: it is true for a
+      // directory too (filesystem semantics, which every real backing has), so
+      // at the cap a write to `notes` — with `notes/a.txt` present — read as an
+      // overwrite and added a 201st file. `readFile` returning null is the only
+      // honest test for "there is no file here", and it runs solely when the
+      // workspace is already full, so the ordinary write still costs one call.
+      const { fileCount } = await ws.getWorkspaceInfo();
+      if (
+        fileCount >= WORKSPACE_MAX_FILES &&
+        (await ws.readFile(path)) === null
+      ) {
+        throw new WorkspaceLimitError(
+          `workspace already holds ${fileCount} files (max ${WORKSPACE_MAX_FILES})`
+        );
       }
       await ws.writeFile(path, content);
     },

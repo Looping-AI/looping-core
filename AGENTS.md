@@ -83,6 +83,14 @@ optional fields on `AgentPlugin`. Removing or re-typing an existing field needs 
 core major and a version bump. Remember that a contract change is a three-repo
 publish train (core → plugins → starter), so one repo is always briefly behind.
 
+> **v1 was amended in 0.1.2, before its first consumer.** `shouldHandleTurn` and
+> `workspaceBacking` were added and `mainAgentTools` was re-typed from
+> `() => ToolSet` to `(ctx) => ToolSet | Promise<ToolSet>`. The re-type would
+> normally require the bump above; it was skipped deliberately, because that rule
+> exists to stop a _published_ plugin failing with a structural-type error several
+> frames from its cause, and at 0.1.2 no plugin had been published against v1.
+> This is the one such amendment. Treat v1 as frozen from here.
+
 `FINGERPRINT_VERSION` in `src/subagent/fingerprint.ts` works the same way and is
 even sharper: bumping it invalidates every cached subagent result and every
 in-flight run's checkpoint. Note that recipe limits are hashed **as declared, not
