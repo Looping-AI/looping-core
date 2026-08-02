@@ -1,10 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { AGENT_CARD_PATH, A2A_PROTOCOL_VERSION } from "@a2a-js/sdk";
+import {
+  AGENT_CARD_PATH,
+  A2A_PROTOCOL_VERSION,
+  AgentCard,
+  verifyAgentCardSignature
+} from "@a2a-js/sdk";
 import { createA2AWorker, JWKS_PATH } from "./index.js";
 import type { AgentManifest } from "../a2a/card.js";
 import type { A2ASecretsEnv } from "../env.js";
 import type { AgentResolver } from "../a2a/agent-stub.js";
-import { makeGatewayToken } from "../testing/auth.js";
+import { makeGatewayToken, TEST_TENANT } from "../testing/auth.js";
 import {
   AGENT_ORIGIN,
   GATEWAY_ORIGIN,
@@ -21,8 +26,8 @@ import {
  * turn that never calls back.
  */
 
-const manifest: AgentManifest = {
-  name: "worker-spec-agent",
+const manifest = (name: string): AgentManifest => ({
+  name,
   description: "an agent behind the A2A edge",
   version: "0.1.0",
   capabilities: {
@@ -33,7 +38,10 @@ const manifest: AgentManifest = {
   defaultInputModes: ["text/plain"],
   defaultOutputModes: ["text/plain"],
   skills: []
-};
+});
+
+/** The stub card for the origin — describes the deployment, not an agent. */
+const hostManifest = manifest("worker-spec-host");
 
 const env: A2ASecretsEnv = {
   A2A_SIGNING_KEY: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
@@ -45,10 +53,18 @@ const resolveAgent: AgentResolver = () => {
   throw new Error("resolveAgent must not be reached in these specs");
 };
 
-const worker = createA2AWorker({
-  manifest,
+const tenantAgent = (name: string) => ({
+  manifest: manifest(name),
   resolveAgent,
   startTurn: async () => {}
+});
+
+const worker = createA2AWorker({
+  manifest: hostManifest,
+  tenants: {
+    [TEST_TENANT]: tenantAgent("worker-spec-agent"),
+    sibling: tenantAgent("worker-spec-sibling")
+  }
 });
 
 const post = (body: unknown, headers: Record<string, string> = {}) =>
@@ -58,11 +74,15 @@ const post = (body: unknown, headers: Record<string, string> = {}) =>
     body: JSON.stringify(body)
   });
 
-const sendMessage = (params: unknown) => ({
+/**
+ * A `SendMessage` addressed at a tenant. Every request carries one: there is no
+ * default agent, so an omitted tenant is a rejection rather than a fallback.
+ */
+const sendMessage = (params: object, tenant: string = TEST_TENANT) => ({
   jsonrpc: "2.0",
   id: 7,
   method: "SendMessage",
-  params
+  params: { tenant, ...params }
 });
 
 beforeAll(() => {
@@ -90,7 +110,30 @@ describe("discovery routes", () => {
     expect(body.keys[0]).not.toHaveProperty("d");
   });
 
-  it("serves a signed card whose jku points back at its own JWKS route", async () => {
+  it("serves the stub card at the well-known path, not any tenant's", async () => {
+    // RFC 8615 reserves this URI per *authority*, so exactly one card is
+    // discoverable here however many agents the origin serves. Serving a
+    // tenant's card would make that tenant the one every gateway pinned.
+    const res = await worker(
+      new Request(`${AGENT_ORIGIN}/${AGENT_CARD_PATH}`),
+      env
+    );
+    const card = await res.json<{
+      name: string;
+      capabilities: { extendedAgentCard: boolean };
+      supportedInterfaces: { tenant: string }[];
+    }>();
+
+    expect(res.status).toBe(200);
+    expect(card.name).toBe("worker-spec-host");
+    // It names no tenant — a caller reaches a real agent by asking for one.
+    expect(card.supportedInterfaces[0].tenant ?? "").toBe("");
+    // …and advertises the route for doing so. The SDK refuses
+    // `GetExtendedAgentCard` outright when this is unset (spec §3.3.4).
+    expect(card.capabilities.extendedAgentCard).toBe(true);
+  });
+
+  it("signs the stub card with a jku pointing back at its own JWKS route", async () => {
     const res = await worker(
       new Request(`${AGENT_ORIGIN}/${AGENT_CARD_PATH}`),
       env
@@ -98,7 +141,6 @@ describe("discovery routes", () => {
     const card = await res.json<Record<string, unknown>>();
 
     expect(res.status).toBe(200);
-    expect(card.name).toBe("worker-spec-agent");
     expect(Array.isArray(card.signatures)).toBe(true);
 
     const [sig] = card.signatures as { protected: string }[];
@@ -185,125 +227,187 @@ describe("gateway authentication", () => {
 });
 
 /**
- * Several agents in one Worker, each behind its own path prefix.
+ * Several agents on one origin, addressed by `tenant`.
  *
- * Only one thing had to become an option for this: which key signs, since the
- * mounts share an `env` and an agent's key is its identity. The other
- * origin-derived fact — which audience a token must carry — is handled by the
- * default now being the agent's *endpoint*, so sibling isolation needs no
- * configuration and cannot be forgotten.
+ * They share an endpoint, so they share an `aud` — the audience proves a token
+ * was minted for this *deployment* and can say nothing about which agent on it.
+ * Everything below is about the claim that can.
  */
-describe("several agents mounted in one Worker", () => {
-  interface MultiEnv {
-    A2A_SIGNING_KEY_PROACTIVE: string;
-    GATEWAY_ORIGINS: string;
-  }
+describe("tenant routing", () => {
+  const call = (body: unknown, token: string): Promise<Response> =>
+    worker(post(body, { authorization: `Bearer ${token}` }), env);
 
-  const multiEnv: MultiEnv = {
-    A2A_SIGNING_KEY_PROACTIVE: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
-    GATEWAY_ORIGINS: JSON.stringify([GATEWAY_ORIGIN])
-  };
+  it("refuses a request that names no tenant", async () => {
+    // No default agent: picking one would mean serving a caller an agent it
+    // never asked for.
+    const token = await makeGatewayToken();
+    const res = await call(
+      { jsonrpc: "2.0", id: 7, method: "SendMessage", params: {} },
+      token
+    );
+    const body = await res.json<{ error: { message: string } }>();
 
-  const mounted = createA2AWorker<MultiEnv>({
-    manifest,
-    resolveAgent,
-    startTurn: async () => {},
-    rpcPath: "/proactive/a2a",
-    jwksPath: "/proactive/.well-known/jwks.json",
-    // No `audience`: the default is `${origin}/proactive/a2a` already.
-    secrets: (e) => ({
-      signingKey: e.A2A_SIGNING_KEY_PROACTIVE,
-      gatewayOrigins: e.GATEWAY_ORIGINS
-    })
+    expect(body.error.message).toMatch(/params\.tenant is required/);
+    // The error has to say how to recover, since the stub card cannot list them.
+    expect(body.error.message).toMatch(/GetExtendedAgentCard/);
   });
 
-  it("reads its signing key from the renamed secret", async () => {
-    // `env` here carries no `A2A_SIGNING_KEY` at all, so serving a card proves
-    // the rename is what was read rather than a fallback finding the default.
-    const res = await mounted(
-      new Request(`${AGENT_ORIGIN}/proactive/.well-known/jwks.json`),
-      multiEnv
-    );
-    const body = await res.json<{ keys: Record<string, unknown>[] }>();
+  it("refuses a tenant no agent is registered under", async () => {
+    const token = await makeGatewayToken({ tenant: "ghost" });
+    const res = await call(sendMessage({}, "ghost"), token);
+    const body = await res.json<{ error: { message: string } }>();
 
-    expect(res.status).toBe(200);
-    expect(body.keys[0].kid).toBe(TEST_AGENT_PRIVATE_JWK.kid);
-    expect(body.keys[0]).not.toHaveProperty("d");
+    expect(body.error.message).toMatch(/unknown tenant 'ghost'/);
   });
 
-  it("advertises and signs under its own prefix", async () => {
-    const res = await mounted(
-      new Request(`${AGENT_ORIGIN}/proactive/${AGENT_CARD_PATH}`),
-      multiEnv
-    );
-    const card = await res.json<{
-      supportedInterfaces: { url: string }[];
-      signatures: { protected: string }[];
-    }>();
-
-    expect(card.supportedInterfaces[0].url).toBe(
-      `${AGENT_ORIGIN}/proactive/a2a`
-    );
-
-    // The `jku` has to resolve to *this* mount's JWKS, not the Worker root —
-    // a gateway fetches the card's key from exactly this URL.
-    const header = JSON.parse(
-      atob(card.signatures[0].protected.replace(/-/g, "+").replace(/_/g, "/"))
-    );
-    expect(header.jku).toBe(`${AGENT_ORIGIN}/proactive/.well-known/jwks.json`);
-  });
-
-  it("refuses a token minted for a sibling mount", async () => {
-    // The reason the default audience is the endpoint. Both mounts share an
-    // origin, so under the old origin-only audience this token verified here
-    // too and either agent could spend the other's.
-    const token = await makeGatewayToken({
-      audience: `${AGENT_ORIGIN}/reactive/a2a`
-    });
-    const res = await mounted(
-      new Request(`${AGENT_ORIGIN}/proactive/a2a`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(sendMessage({}))
-      }),
-      multiEnv
-    );
+  it("refuses a token minted for a sibling tenant", async () => {
+    // The replay this design has to stop. The token is entirely valid — right
+    // gateway, right signature, right audience, and the audience *cannot*
+    // distinguish siblings because they share one endpoint. Only the tenant
+    // claim separates them, so if this ever returns anything but 401, one agent
+    // can spend another's token by editing a field in the request body.
+    const token = await makeGatewayToken({ tenant: "sibling" });
+    const res = await call(sendMessage({}, TEST_TENANT), token);
 
     expect(res.status).toBe(401);
+    expect(await res.text()).toMatch(/authorizes tenant 'sibling'/);
   });
 
-  it("accepts a token minted for its own mount", async () => {
-    // Exactly what looping-gateway mints for a registered endpoint of
-    // `${AGENT_ORIGIN}/proactive/a2a` — origin + pathname, nothing derived.
-    const token = await makeGatewayToken({
-      audience: `${AGENT_ORIGIN}/proactive/a2a`,
-      identity: { name: "anonymous" }
-    });
-    const res = await mounted(
-      new Request(`${AGENT_ORIGIN}/proactive/a2a`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(sendMessage({}))
-      }),
-      multiEnv
-    );
+  it("refuses a token carrying no tenant claim at all", async () => {
+    // A gateway too old to scope its tokens. Treating an absent claim as a
+    // wildcard would silently reopen the replay above for every such caller.
+    const token = await makeGatewayToken({ tenant: "" });
+    const res = await call(sendMessage({}, TEST_TENANT), token);
 
-    // 400, not 401: the token verified, and the call died one step later on the
-    // keyless identity. That is the assertion — anything 401 would mean the
-    // audience check rejected it.
+    expect(res.status).toBe(401);
+    expect(await res.text()).toMatch(/authorizes tenant '<none>'/);
+  });
+
+  it("accepts a token whose tenant matches the one addressed", async () => {
+    const token = await makeGatewayToken({ identity: { name: "anonymous" } });
+    const res = await call(sendMessage({}, TEST_TENANT), token);
+
+    // 400, not 401: the token verified and the tenant matched, so the call died
+    // one step later on the keyless identity. Anything 401 would mean the
+    // tenant check rejected a legitimate call.
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/identity missing key/);
   });
 });
 
+describe("GetExtendedAgentCard", () => {
+  const getCard = async (tenant: string, tokenTenant = tenant) => {
+    const token = await makeGatewayToken({ tenant: tokenTenant });
+    return worker(
+      post(
+        {
+          jsonrpc: "2.0",
+          id: 9,
+          method: "GetExtendedAgentCard",
+          params: { tenant }
+        },
+        {
+          authorization: `Bearer ${token}`,
+          "A2A-Version": A2A_PROTOCOL_VERSION
+        }
+      ),
+      env
+    );
+  };
+
+  it("returns the addressed tenant's own signed card", async () => {
+    // The only way to get a tenant's card, since the well-known path serves the
+    // stub. A gateway registering an agent pins the key from exactly this.
+    const res = await getCard(TEST_TENANT);
+    const body = await res.json<{
+      result: {
+        name: string;
+        supportedInterfaces: { tenant: string; url: string }[];
+        signatures: { protected: string }[];
+      };
+    }>();
+
+    expect(body.result.name).toBe("worker-spec-agent");
+    expect(body.result.supportedInterfaces[0].tenant).toBe(TEST_TENANT);
+    // Every tenant answers on the one endpoint — that is what tenant is for.
+    expect(body.result.supportedInterfaces[0].url).toBe(`${AGENT_ORIGIN}/a2a`);
+
+    const header = JSON.parse(
+      atob(
+        body.result.signatures[0].protected
+          .replace(/-/g, "+")
+          .replace(/_/g, "/")
+      )
+    );
+    expect(header.jku).toBe(`${AGENT_ORIGIN}${JWKS_PATH}`);
+  });
+
+  it("distinguishes tenants", async () => {
+    const res = await getCard("sibling");
+    const body = await res.json<{ result: { name: string } }>();
+    expect(body.result.name).toBe("worker-spec-sibling");
+  });
+
+  it("survives the SDK re-encoding the card it returns", async () => {
+    // The transport runs `AgentCard.toJSON()` over whatever the provider
+    // returns, so returning an already-encoded wire card would encode twice.
+    //
+    // `advertiseSecuritySchemes` is on here deliberately, and this spec is
+    // close to worthless without it: `securitySchemes` is the card's only
+    // protobuf *oneof*, and the second encode is what collapses
+    // `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to `{ gatewayJwt: {} }`.
+    // With schemes off — the default — encoding twice is a no-op and this
+    // passes against the broken implementation too.
+    const advertising = createA2AWorker({
+      manifest: hostManifest,
+      tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
+      advertiseSecuritySchemes: true
+    });
+
+    const res = await advertising(
+      post(
+        {
+          jsonrpc: "2.0",
+          id: 9,
+          method: "GetExtendedAgentCard",
+          params: { tenant: TEST_TENANT }
+        },
+        {
+          authorization: `Bearer ${await makeGatewayToken()}`,
+          "A2A-Version": A2A_PROTOCOL_VERSION
+        }
+      ),
+      env
+    );
+    const { result } = await res.json<{ result: Record<string, unknown> }>();
+
+    // The scheme survived the round trip at all — if this collapsed, the
+    // signature check below would fail for a reason worth naming separately.
+    expect(result.securitySchemes).toMatchObject({
+      gatewayJwt: { httpAuthSecurityScheme: { scheme: "bearer" } }
+    });
+
+    // Verified exactly as looping-gateway does: decode what arrived, re-encode,
+    // check the detached JWS. Rejects if the served document is not the one
+    // that was signed.
+    const { d: _d, ...publicJwk } = TEST_AGENT_PRIVATE_JWK;
+    void _d;
+    const verify = verifyAgentCardSignature(async () => publicJwk);
+    await expect(
+      verify(AgentCard.toJSON(AgentCard.fromJSON(result)) as AgentCard)
+    ).resolves.not.toThrow();
+  });
+
+  it("is refused when the token names a different tenant", async () => {
+    // Fetching a card is authorized the same way sending a message is; a
+    // caller cannot enumerate its siblings' cards with its own token.
+    const res = await getCard("sibling", TEST_TENANT);
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("the accept-and-notify contract", () => {
-  const authed = async (params: unknown) =>
+  const authed = async (params: object) =>
     worker(
       post(sendMessage(params), {
         authorization: `Bearer ${await makeGatewayToken()}`,
@@ -360,9 +464,8 @@ describe("the accept-and-notify contract", () => {
 
   it("can be turned off for an agent that replies inline", async () => {
     const inline = createA2AWorker({
-      manifest,
-      resolveAgent,
-      startTurn: async () => {},
+      manifest: hostManifest,
+      tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
       requirePushConfig: false
     });
 

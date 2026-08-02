@@ -68,59 +68,84 @@ const manifest = {
 
 export default {
   fetch: createA2AWorker({
-    manifest,
-    // One DO instance per verified caller — this is what makes a task
-    // unreachable from any other caller by construction.
-    resolveAgent: (identity) =>
-      env.MY_AGENT.get(env.MY_AGENT.idFromName(identity.key!)),
-    // Must be idempotent: the gateway retries dispatch.
-    startTurn: async (turn) => {
-      await env.TURN_WORKFLOW.create({ id: turn.messageId, params: turn });
+    // The stub card at /.well-known/agent-card.json. It describes the origin,
+    // not an agent — see below.
+    manifest: hostManifest,
+    tenants: {
+      "my-agent": {
+        manifest,
+        // One DO instance per verified caller — this is what makes a task
+        // unreachable from any other caller by construction.
+        resolveAgent: (identity) =>
+          env.MY_AGENT.get(env.MY_AGENT.idFromName(identity.key!)),
+        // Must be idempotent: the gateway retries dispatch.
+        startTurn: async (turn) => {
+          await env.TURN_WORKFLOW.create({ id: turn.messageId, params: turn });
+        }
+      }
     }
   })
 } satisfies ExportedHandler<Env>;
 ```
 
-That handler serves three routes: the public JWKS, a **signed** AgentCard at
-`/.well-known/agent-card.json`, and gateway-authenticated JSON-RPC. Every POST is
-verified before a Durable Object is ever addressed.
+That handler serves three routes: the public JWKS, a **signed** stub AgentCard at
+`/.well-known/agent-card.json`, and gateway-authenticated JSON-RPC. Every POST is verified
+before a Durable Object is ever addressed.
 
-#### Several agents in one Worker
+#### Agents are tenants
 
-The JSON-RPC and JWKS paths are options and both are matched exactly, so you can mount one
-handler per prefix behind your own router and give each agent its own card, JWKS and
-Durable Object. Only one option exists for that case:
+Agents are keyed by **tenant id**, and one is required on every request — there is no
+default agent and no implicit routing. This is the A2A mechanism for exactly this case:
+`AgentInterface.tenant` is _"an opaque string used for routing requests to a specific agent
+or tenant when multiple agents are served behind a single A2A endpoint"_, and §8.3.2
+requires a client to send the value the interface it selected declared.
 
-```ts
-const proactive = createA2AWorker<Env>({
-  manifest: proactiveManifest,
-  rpcPath: "/proactive/a2a",
-  jwksPath: "/proactive/.well-known/jwks.json",
-  // Each mount signs with its own key — they share an `env`, so they cannot all
-  // read `A2A_SIGNING_KEY`, and an agent's key is its identity to the gateway.
-  secrets: (env) => ({
-    signingKey: env.A2A_SIGNING_KEY_PROACTIVE,
-    gatewayOrigins: env.GATEWAY_ORIGINS
-  }),
-  resolveAgent,
-  startTurn
-});
+So one origin serves any number of agents over **one endpoint, one signing key and one
+card** at the well-known path. It works the same for one agent as for twenty; nothing about
+the shape changes.
+
+The card is the reason it has to be this way rather than a path prefix per agent. Its
+location is a **well-known URI**, which RFC 8615 defines per-authority, so exactly one card
+per origin is discoverable at the path A2A registered with IANA. A gateway resolving
+`/.well-known/agent-card.json` against the origin finds that one card whatever prefix an
+agent is mounted behind — and pins its key for all of them.
+
+Which is why the card served there is a **stub**: it describes the deployment, advertises
+the endpoint and `extendedAgentCard`, and names no tenant. A tenant's real card — its name,
+skills and signature — comes from `GetExtendedAgentCard`, the spec's own tenant-aware card
+method:
+
+```jsonc
+// POST /a2a
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "GetExtendedAgentCard",
+  "params": { "tenant": "my-agent" }
+}
 ```
 
-Telling a token minted for `/reactive` apart from one minted for `/proactive` needs no
-configuration: the gateway JWT's audience is checked against this agent's own endpoint
-(`${origin}${rpcPath}`), so a sibling's token is refused.
+A card carries one interface entry and clients take the first, so the stub cannot list its
+siblings — put their names in `description` for a human, and register them out of band.
 
-> **Breaking in 0.2.0.** That audience used to be the bare origin, which could not
-> distinguish two agents behind one host. An agent on 0.2.0 rejects tokens from a gateway
-> still minting origin-only audiences, and vice versa, so the gateway and its registered
-> agents deploy together. looping-gateway mints the endpoint as of
-> [#62](https://github.com/Looping-AI/looping-gateway/pull/62).
+Two independent checks keep one tenant's traffic out of another's:
 
-Pass the request through unmodified — do not strip the prefix. The handler matches
-`rpcPath` and `jwksPath` exactly and the card path by suffix, so prefixed paths work with
-no rewriting and the card's `jku` stays resolvable. With one agent per Worker `secrets` is
-unnecessary and every default is exactly right.
+| check        | proves                                       |
+| ------------ | -------------------------------------------- |
+| `aud`        | the token was minted for **this deployment** |
+| tenant claim | …and for **this agent on it**                |
+
+The second is load-bearing. Every tenant shares one endpoint and therefore one audience, so
+the audience cannot distinguish them: without the claim, `tenant` would be an
+unauthenticated field in the request body and a token minted for one agent could be replayed
+against any sibling. A token carrying no tenant claim is rejected rather than treated as a
+wildcard.
+
+> **Breaking.** Requires a gateway that mints both the endpoint audience and the tenant
+> claim, and registers agents with a tenant id — looping-gateway
+> [#62](https://github.com/Looping-AI/looping-gateway/pull/62). The two sides do not
+> interoperate across this change in either direction, so they deploy together and
+> registered agents are re-registered.
 
 ### 3. Build the runtime in your Durable Object
 

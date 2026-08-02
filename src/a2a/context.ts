@@ -43,12 +43,19 @@ class GatewayUser implements User {
  * stashes the raw headers in the context's state bag, so an executor can reach
  * them the same way it would under the Express binding.
  *
- * `tenant` is deliberately unset: one agent DO instance *is* the tenant, keyed
- * by the verified caller, so there is no second axis to scope on.
+ * `tenant` names which agent on this origin the call is for. The SDK's
+ * `JsonRpcTransportHandler` would also lift it off `params.tenant` on its own,
+ * but only when the context arrives without one — so passing it here is not
+ * redundant: this Worker has already parsed, authorized and routed on the
+ * tenant before a handler exists to receive the context, and setting it keeps
+ * the value the executor and task store see identical to the one that chose
+ * them. It is also what reaches the extended-card provider, which the SDK calls
+ * with the context alone.
  */
 export function buildCallContext(
   request: Request,
-  identity: GatewayIdentity
+  identity: GatewayIdentity,
+  tenant: string
 ): ServerCallContext {
   const headers: RequestHeaders = {};
   for (const [name, value] of request.headers) headers[name] = value;
@@ -59,7 +66,8 @@ export function buildCallContext(
     ),
     user: new GatewayUser(identity),
     headers,
-    requestedVersion: request.headers.get(A2A_VERSION_HEADER) ?? undefined
+    requestedVersion: request.headers.get(A2A_VERSION_HEADER) ?? undefined,
+    tenant
   });
 }
 

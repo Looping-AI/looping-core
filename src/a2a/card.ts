@@ -53,6 +53,18 @@ export interface BuildCardOptions {
   /** Path this agent answers JSON-RPC on. Defaults to {@link A2A_RPC_PATH}. */
   rpcPath?: string;
   /**
+   * The tenant this card describes, advertised on its interface entry.
+   *
+   * Several agents share one endpoint here, so `tenant` is what says *which*
+   * one — A2A spec §8.3.2 requires a client to echo the declared value on every
+   * request, and this Worker refuses a request that does not.
+   *
+   * Omitted for the **root stub card**, which describes the origin rather than
+   * any agent: it advertises the endpoint and `extendedAgentCard`, and a caller
+   * reaches a real agent by asking for its tenant.
+   */
+  tenant?: string;
+  /**
    * Advertise the gateway's Bearer-JWT scheme in `securitySchemes`.
    *
    * **Defaults to `false` for historical reasons that no longer hold — see
@@ -108,14 +120,26 @@ export function buildBaseCard(
   const rpcPath = opts.rpcPath ?? A2A_RPC_PATH;
   return {
     ...manifest,
+    capabilities: {
+      // `extensions` is required on the proto type but absent from most
+      // hand-written manifests, so it is defaulted before the spread rather
+      // than after — a manifest that declares extensions keeps them.
+      extensions: [],
+      ...manifest.capabilities,
+      // Forced on, not inherited from the manifest: an agent here is *only*
+      // reachable as a tenant, and its card *only* through
+      // `GetExtendedAgentCard`. The SDK gates that method on this flag, reading
+      // it off whichever card the request handler was built with (spec §3.3.4 —
+      // it MUST return `UnsupportedOperationError` when unset), so every card
+      // this Worker serves has to carry it, the stub and the tenants alike.
+      extendedAgentCard: true
+    },
     supportedInterfaces: [
       {
         url: `${opts.origin}${rpcPath}`,
         protocolBinding: "JSONRPC",
         protocolVersion: A2A_PROTOCOL_VERSION,
-        // Single-tenant agent: one DO per verified gateway identity, so the
-        // protocol-level tenant slot goes unused.
-        tenant: ""
+        tenant: opts.tenant ?? ""
       }
     ],
     provider: undefined,
@@ -169,6 +193,36 @@ export async function signCard(
   });
   const signed = await sign(wireCard(card));
   return signed as unknown as WireAgentCard;
+}
+
+/**
+ * The same signature, attached to the **in-memory** card instead of the wire
+ * one — for a caller that hands the card to something which will encode it
+ * itself.
+ *
+ * That caller is `GetExtendedAgentCard`. The SDK's JSON-RPC transport runs
+ * `AgentCard.toJSON()` over whatever the extended-card provider returns, so
+ * returning {@link signCard}'s wire card means `toJSON` runs over a document
+ * that has already been encoded. For most cards that is a no-op and looks fine
+ * — which is the trap. `securitySchemes` is a protobuf *oneof*: encoding it
+ * twice collapses `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to
+ * `{ gatewayJwt: {} }`, the served document stops matching the one that was
+ * signed, and every signature verification fails.
+ *
+ * So the double encode is latent today only because
+ * {@link BuildCardOptions.advertiseSecuritySchemes} defaults to `false`; it
+ * would surface the day that flag is flipped, as a signature failure with
+ * nothing pointing back here. Returning the in-memory card lets the SDK do the
+ * single encode the signature was computed over, and is correct either way.
+ *
+ * `card.spec.ts` pins both halves.
+ */
+export async function signCardInPlace(
+  card: AgentCard,
+  cfg: CardSigningConfig
+): Promise<AgentCard> {
+  const signed = await signCard(card, cfg);
+  return { ...card, signatures: signed.signatures as AgentCard["signatures"] };
 }
 
 /**

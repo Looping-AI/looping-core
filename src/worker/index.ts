@@ -11,6 +11,7 @@ import {
   parsePrivateJwk,
   publicCardJwks,
   signCard,
+  signCardInPlace,
   type AgentManifest
 } from "../a2a/card.js";
 import { buildCallContext, extensionHeaders } from "../a2a/context.js";
@@ -42,23 +43,39 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  * No secret is ever shared in either direction: trust flows entirely on domains
  * and asymmetric (Ed25519) signatures over public JWKS.
  *
- * **Several agents may share one Worker.** The JSON-RPC and JWKS paths are
- * options (`rpcPath`, `jwksPath`) and both are matched exactly, so a consumer
- * mounts one handler per prefix behind its own router and each agent gets its
- * own card, JWKS and Durable Object.
+ * **Several agents share one Worker, addressed by `tenant`.** They share one
+ * origin, one endpoint, one signing key and one card at the well-known path;
+ * what differs is the tenant id on every request. That is the A2A mechanism for
+ * exactly this — `AgentInterface.tenant` is "an opaque string used for routing
+ * requests to a specific agent or tenant when multiple agents are served behind
+ * a single A2A endpoint", and §8.3.2 requires a client to send the value the
+ * selected interface declared.
  *
- * The card route is the exception: it is matched by **suffix**
- * (`…/.well-known/agent-card.json`), because that path is fixed by the A2A spec
- * and a mounted agent serves it under its own prefix. A handler will therefore
- * answer a card request on any prefix routed to it — which is correct when the
- * outer router only sends it its own, and is the one place where mounting relies
- * on that router rather than on this handler.
+ * A tenant is **required on every request**. There is no default and no
+ * implicit routing: an absent tenant is an error, because guessing one would
+ * mean picking an agent the caller never named.
  *
- * Separating a token minted for one mount from its siblings needs no option:
- * the gateway JWT's audience is checked against this agent's own endpoint
- * (`${origin}${rpcPath}`), so a token for `/reactive` is refused at
- * `/proactive`. One option exists for the multi-agent case and only that case —
- * `secrets`, so each mount signs its card and callbacks with its own key.
+ * This replaces mounting a handler per path prefix. That could not work: the
+ * card is a **well-known URI**, which RFC 8615 defines per-authority, so only
+ * one card per origin is discoverable at the registered path — a gateway
+ * resolving `…/.well-known/agent-card.json` against the origin found whichever
+ * agent owned the bare path and pinned *its* key for all of them.
+ *
+ * Three routes:
+ *
+ *  1. `GET jwksPath` — the card-signing public JWKS, resolving every card's
+ *     `jku`.
+ *  2. `GET …/.well-known/agent-card.json` — the signed **stub** card for the
+ *     origin. Matched by suffix, since that path is fixed by the spec.
+ *  3. `POST rpcPath` — gateway-authenticated JSON-RPC, routed to the named
+ *     tenant. `GetExtendedAgentCard` returns that tenant's own signed card;
+ *     everything else runs a turn against its Durable Object.
+ *
+ * Two independent checks keep one tenant's traffic out of another's:
+ * `audience` proves the token was minted for this deployment, and
+ * {@link TENANT_CLAIM} proves it was minted for *this agent on it*. The second
+ * is what makes `tenant` more than an unauthenticated routing hint in the
+ * request body.
  */
 
 /** Default path serving the card-signing public JWKS (the card's `jku`). */
@@ -75,44 +92,77 @@ export interface A2ASecrets {
   gatewayOrigins: string;
 }
 
-export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
+/** One agent served on this origin — everything that differs between tenants. */
+export interface TenantAgent {
   /** The transport-independent half of this agent's card. */
   manifest: AgentManifest;
   /** Resolve the agent DO stub for a verified caller. */
   resolveAgent: AgentResolver;
   /** Start the durable turn. Must be idempotent — see {@link TurnStarter}. */
   startTurn: TurnStarter;
+}
+
+export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
+  /**
+   * The **stub** card served at the well-known path.
+   *
+   * It describes the origin, not an agent. Every agent here is a tenant and its
+   * card is reached through `GetExtendedAgentCard`, so this card exists to be
+   * the one conformant, signed AgentCard at the URI RFC 8615 and the A2A IANA
+   * registration reserve — advertising the endpoint, the protocol binding and
+   * `extendedAgentCard`.
+   *
+   * It cannot enumerate the tenants: a card carries one interface entry and
+   * spec §8.3.2 has clients take the first, so listing siblings there would
+   * just make every client address the same one. Put their names in
+   * `description` for a human, and register them out of band.
+   */
+  manifest: AgentManifest;
+  /**
+   * The agents on this origin, keyed by tenant id. At least one.
+   *
+   * The id is opaque to the protocol — "an opaque string used for routing
+   * requests to a specific agent or tenant when multiple agents are served
+   * behind a single A2A endpoint". A caller names one on every request and this
+   * Worker refuses a request that does not.
+   *
+   * The tenant chooses *which agent*; the verified `identity.key` still chooses
+   * *which instance of it*, so two callers of one tenant stay in separate
+   * Durable Objects exactly as before.
+   */
+  tenants: Record<string, TenantAgent>;
   /** Path serving the public JWKS. Defaults to {@link JWKS_PATH}. */
   jwksPath?: string;
   /** Path this agent answers JSON-RPC on. Defaults to `/a2a`. */
   rpcPath?: string;
   /**
-   * Where to read this mount's two secrets. Defaults to the documented names,
-   * `env.A2A_SIGNING_KEY` and `env.GATEWAY_ORIGINS`.
+   * Where to read this deployment's two secrets. Defaults to the documented
+   * names, `env.A2A_SIGNING_KEY` and `env.GATEWAY_ORIGINS`.
    *
-   * Exists for the one case the defaults cannot serve: **several agents mounted
-   * in one Worker**, each with its own signing identity. They share an `env`, so
-   * they cannot all read `A2A_SIGNING_KEY`.
+   * There is **one signing key per origin**, not one per tenant: the card is
+   * per-origin now, so the key the gateway pins is too. Nothing was lost — the
+   * tenants share a Worker and an `env`, so they could always read each other's
+   * secrets, and separate keys never expressed a boundary that existed.
    *
    * ```ts
    * secrets: (env) => ({
-   *   signingKey: env.A2A_SIGNING_KEY_PROACTIVE,
-   *   gatewayOrigins: env.GATEWAY_ORIGINS
+   *   signingKey: env.AGENT_KEY,
+   *   gatewayOrigins: env.ALLOWED_GATEWAYS
    * })
    * ```
    *
    * Renaming does not weaken anything: the same key is still Ed25519, still
-   * signs the card and every callback JWT, and its public half is still what the
-   * gateway pins. Only where it is read from changes.
+   * signs the cards and every callback JWT, and its public half is still what
+   * the gateway pins. Only where it is read from changes.
    */
   secrets?: (env: TEnv) => A2ASecrets;
   /**
    * The audience a gateway JWT must carry.
    *
-   * Defaults to this agent's **own endpoint** — `${origin}${rpcPath}`, the same
-   * URL its card advertises as its interface — and that default is almost
-   * certainly what you want. Setting this is for a gateway that mints something
-   * else.
+   * Defaults to this deployment's **own endpoint** — `${origin}${rpcPath}`, the
+   * same URL its cards advertise as their interface — and that default is
+   * almost certainly what you want. Setting this is for a gateway that mints
+   * something else.
    *
    * The audience is one half of a two-sided contract: whatever is required here
    * has to be exactly what the calling gateway *mints*, and a mismatch is a 401
@@ -120,17 +170,11 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    * `new URL(agent.a2aEndpoint).origin + pathname`, which is what this default
    * matches.
    *
-   * **Changed in 0.2.0, and it is a breaking change.** It used to be the bare
-   * origin. That could not distinguish several agents behind one host — a token
-   * minted for `https://host/reactive/a2a` verified identically at
-   * `https://host/proactive/a2a` — so mounting more than one agent per Worker
-   * meant any of them could spend another's token. It was never a data leak,
-   * since each Durable Object keys its state by the verified `identity.key`
-   * regardless, but "which agent was this token issued for" was a question
-   * nothing could answer. Now it can.
-   *
-   * An agent on 0.2.0 and a gateway minting the old origin-only audience do not
-   * interoperate in either direction, so they deploy together.
+   * It proves the token was minted for **this deployment**, and deliberately
+   * says nothing about which agent on it — every tenant shares one endpoint and
+   * therefore one audience. {@link TENANT_CLAIM} is what separates them, and is
+   * the check to look at when reasoning about one agent spending another's
+   * token.
    */
   audience?: string | ((url: URL) => string);
   /**
@@ -229,7 +273,12 @@ function pushConfigError(rpcBody: {
  * Build the Worker `fetch` handler.
  *
  * ```ts
- * const handler = createA2AWorker({ manifest, resolveAgent: getAgent, startTurn });
+ * const handler = createA2AWorker({
+ *   manifest: hostManifest,
+ *   tenants: {
+ *     reactive: { manifest, resolveAgent: getAgent, startTurn }
+ *   }
+ * });
  * export default { fetch: handler } satisfies ExportedHandler<Env>;
  * ```
  *
@@ -243,7 +292,7 @@ function pushConfigError(rpcBody: {
 export function createA2AWorker<TEnv extends A2ASecretsEnv>(
   options: A2AWorkerOptions<TEnv>
 ): (request: Request, env: TEnv) => Promise<Response>;
-// Anything else — a renamed or per-agent key — must supply the reader.
+// Anything else — a renamed key — must supply the reader.
 export function createA2AWorker<TEnv extends object>(
   options: A2AWorkerOptions<TEnv> & {
     secrets: (env: TEnv) => A2ASecrets;
@@ -255,6 +304,11 @@ export function createA2AWorker<TEnv extends object>(
   const jwksPath = options.jwksPath ?? JWKS_PATH;
   const rpcPath = options.rpcPath ?? A2A_RPC_PATH;
   const requirePushConfig = options.requirePushConfig ?? true;
+  // Nothing can be served without at least one agent, and a deployment that
+  // configured none is a startup mistake rather than a per-request one.
+  if (Object.keys(options.tenants).length === 0) {
+    throw new Error("createA2AWorker requires at least one tenant");
+  }
   // Only reachable through the first overload, which has already established
   // that `TEnv` carries the two documented names.
   const readSecrets =
@@ -276,27 +330,28 @@ export function createA2AWorker<TEnv extends object>(
         ? options.audience(url)
         : (options.audience ?? `${origin}${rpcPath}`);
     const privateJwk = parsePrivateJwk(secrets.signingKey);
-    const cardOptions = {
-      origin,
-      rpcPath: options.rpcPath,
-      advertiseSecuritySchemes: options.advertiseSecuritySchemes
-    };
+    const signing = { privateJwk, jku: `${origin}${jwksPath}` };
+    const cardFor = (manifest: AgentManifest, tenant?: string) =>
+      buildBaseCard(manifest, {
+        origin,
+        rpcPath: options.rpcPath,
+        advertiseSecuritySchemes: options.advertiseSecuritySchemes,
+        tenant
+      });
 
-    // (1) Card-signing public JWKS — resolves the card's `jku` for the gateway.
+    // (1) Card-signing public JWKS — resolves every card's `jku` for the
+    // gateway. One key per origin, so one JWKS for every tenant.
     if (request.method === "GET" && url.pathname === jwksPath) {
       return Response.json(publicCardJwks(privateJwk), {
         headers: { "cache-control": "public, max-age=3600" }
       });
     }
 
-    // (2) Signed AgentCard discovery. `signCard` returns the protobuf-JSON
-    // encoding — the exact document the signature is computed over.
+    // (2) The stub card, at the well-known path. `signCard` returns the
+    // protobuf-JSON encoding — the exact document the signature is computed
+    // over — so it is serialized here without re-encoding.
     if (request.method === "GET" && url.pathname.endsWith(AGENT_CARD_PATH)) {
-      const card = await signCard(
-        buildBaseCard(options.manifest, cardOptions),
-        { privateJwk, jku: `${origin}${jwksPath}` }
-      );
-      return Response.json(card);
+      return Response.json(await signCard(cardFor(options.manifest), signing));
     }
 
     // (3) A2A JSON-RPC — gateway-authenticated, dispatched into the caller's DO.
@@ -311,12 +366,16 @@ export function createA2AWorker<TEnv extends object>(
       if (!token) return unauthorized("missing gateway bearer token");
 
       let identity: GatewayIdentity;
+      let authorizedTenant: string;
       try {
-        ({ identity } = await verifyGatewayToken(token, {
-          allowedOrigins: parseGatewayOrigins(secrets.gatewayOrigins),
-          audience,
-          identityClaim: options.identityClaim
-        }));
+        ({ identity, tenant: authorizedTenant } = await verifyGatewayToken(
+          token,
+          {
+            allowedOrigins: parseGatewayOrigins(secrets.gatewayOrigins),
+            audience,
+            identityClaim: options.identityClaim
+          }
+        ));
       } catch (err) {
         const message =
           err instanceof GatewayAuthError ? err.message : "verification failed";
@@ -340,8 +399,56 @@ export function createA2AWorker<TEnv extends object>(
       const rpcBody = (
         typeof body === "object" && body !== null ? body : {}
       ) as { method?: string; params?: unknown };
-      const card = buildBaseCard(options.manifest, cardOptions);
-      const context = buildCallContext(request, identity);
+
+      // Which agent this call is for. Read straight off the body rather than
+      // through a codec: every request message carries `tenant` in the same
+      // place, so decoding as one specific request type would mean knowing the
+      // method first, and the tenant is needed to pick the handler that would
+      // decide that.
+      const requestedTenant =
+        (rpcBody.params as { tenant?: unknown } | undefined)?.tenant ?? "";
+      if (typeof requestedTenant !== "string" || !requestedTenant) {
+        return jsonRpcErrorResponse(
+          body,
+          toJsonRpcError(
+            new RequestMalformedError(
+              "params.tenant is required: this endpoint serves several agents " +
+                "and none is the default. Use the tenant declared on the " +
+                "interface of the agent's card (A2A §8.3.2), or call " +
+                "GetExtendedAgentCard with it to fetch that card."
+            )
+          )
+        );
+      }
+
+      // The token names the tenant the gateway authorized; the body names the
+      // one the call addressed. They must agree.
+      //
+      // This is the check that makes `tenant` more than a routing hint. Every
+      // tenant here shares one endpoint and so one `aud`, which means the
+      // audience cannot tell them apart — without this, a token legitimately
+      // minted for one agent could be replayed against any of its siblings by
+      // editing a field in the request body. An absent claim is a rejection
+      // rather than a wildcard for the same reason.
+      if (authorizedTenant !== requestedTenant) {
+        return unauthorized(
+          `gateway token authorizes tenant '${authorizedTenant || "<none>"}', ` +
+            `but the request addressed '${requestedTenant}'`
+        );
+      }
+
+      const agent = options.tenants[requestedTenant];
+      if (!agent) {
+        return jsonRpcErrorResponse(
+          body,
+          toJsonRpcError(
+            new RequestMalformedError(`unknown tenant '${requestedTenant}'`)
+          )
+        );
+      }
+
+      const card = cardFor(agent.manifest, requestedTenant);
+      const context = buildCallContext(request, identity, requestedTenant);
 
       // v1.0 negotiates the protocol version per request via the `A2A-Version`
       // header, and the SDK leaves enforcement to the transport binding (its
@@ -372,13 +479,35 @@ export function createA2AWorker<TEnv extends object>(
 
       const handler = new DefaultRequestHandler(
         card,
-        new DurableTaskStore(identity, options.resolveAgent),
+        new DurableTaskStore(identity, agent.resolveAgent),
         new A2AExecutor({
           identity,
           jku: `${origin}${jwksPath}`,
-          resolveAgent: options.resolveAgent,
-          startTurn: options.startTurn
-        })
+          resolveAgent: agent.resolveAgent,
+          startTurn: agent.startTurn
+        }),
+        undefined,
+        undefined,
+        undefined,
+        // `GetExtendedAgentCard` — how a caller gets a *tenant's* card, since
+        // only the stub is discoverable at the well-known path.
+        //
+        // Returns the in-memory card and lets the SDK encode it: its JSON-RPC
+        // transport runs `AgentCard.toJSON()` over whatever comes back, so
+        // handing it `signCard`'s already-encoded wire card would encode twice
+        // and silently break the signature. See {@link signCardInPlace}.
+        //
+        // The tenant is read off the context rather than the request params
+        // because that is all the SDK passes; it is the value this Worker
+        // already authorized and routed on.
+        async (ctx) => {
+          const requested = ctx.tenant ?? "";
+          const target = options.tenants[requested];
+          if (!target) {
+            throw new RequestMalformedError(`unknown tenant '${requested}'`);
+          }
+          return signCardInPlace(cardFor(target.manifest, requested), signing);
+        }
       );
       const rpc = new JsonRpcTransportHandler(handler);
       const result = await rpc.handle(body, context);
