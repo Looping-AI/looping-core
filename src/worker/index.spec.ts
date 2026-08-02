@@ -132,6 +132,23 @@ describe("discovery routes", () => {
     const res = await worker(new Request(`${AGENT_ORIGIN}/nope`), env);
     expect(res.status).toBe(404);
   });
+
+  it("404s a POST to a path that is not this agent's rpcPath", async () => {
+    // The JSON-RPC branch matches the advertised path, not merely the method.
+    // Accepting every POST made `rpcPath` decorative — a call to any URL on the
+    // origin was served as JSON-RPC, so a mounted agent's isolation rested
+    // entirely on an outer router matching first, and a typo'd endpoint quietly
+    // worked instead of failing.
+    const res = await worker(
+      new Request(`${AGENT_ORIGIN}/not-the-rpc-path`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(sendMessage({}))
+      }),
+      env
+    );
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("gateway authentication", () => {

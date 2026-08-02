@@ -6,6 +6,7 @@ import {
 } from "@a2a-js/sdk/server";
 import { RequestMalformedError, toJsonRpcError } from "@a2a-js/sdk/errors";
 import {
+  A2A_RPC_PATH,
   buildBaseCard,
   parsePrivateJwk,
   publicCardJwks,
@@ -41,13 +42,23 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  * No secret is ever shared in either direction: trust flows entirely on domains
  * and asymmetric (Ed25519) signatures over public JWKS.
  *
- * **Several agents may share one Worker.** Every path this handler answers on is
- * an option (`rpcPath`, `jwksPath`), so a consumer mounts one handler per prefix
- * behind its own router and each agent gets its own card, JWKS and DO. Two
- * options exist for that case and only that case: `secrets`, so each mount signs
- * with its own key, and `audience`, so a token minted for one mount does not
- * verify at another. With one agent per Worker both defaults are correct and
- * neither needs setting.
+ * **Several agents may share one Worker.** The JSON-RPC and JWKS paths are
+ * options (`rpcPath`, `jwksPath`) and both are matched exactly, so a consumer
+ * mounts one handler per prefix behind its own router and each agent gets its
+ * own card, JWKS and Durable Object.
+ *
+ * The card route is the exception: it is matched by **suffix**
+ * (`…/.well-known/agent-card.json`), because that path is fixed by the A2A spec
+ * and a mounted agent serves it under its own prefix. A handler will therefore
+ * answer a card request on any prefix routed to it — which is correct when the
+ * outer router only sends it its own, and is the one place where mounting relies
+ * on that router rather than on this handler.
+ *
+ * Two options exist for the multi-agent case and only that case: `secrets`, so
+ * each mount signs with its own key, and `audience`, so a token minted for one
+ * mount does not verify at another. With one agent per Worker both defaults are
+ * correct and neither should be set — and `audience` in particular must not be
+ * set before the calling gateway mints a matching value.
  */
 
 /** Default path serving the card-signing public JWKS (the card's `jku`). */
@@ -98,22 +109,25 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
   /**
    * The audience a gateway JWT must carry. Defaults to the request origin.
    *
-   * Override it when several agents share an origin, so a token minted for one
-   * mount does not verify at another:
+   * **Do not set this without changing your gateway first.** It is one half of a
+   * two-sided contract: whatever is required here has to be exactly what the
+   * calling gateway *mints*, and a mismatch is a 401 on every single request.
+   * looping-gateway currently mints `new URL(agent.a2aEndpoint).origin` — scheme
+   * and host, no path — so the default is the only value that authenticates
+   * against it today. Overriding it to a per-agent value ahead of a matching
+   * gateway change rejects all traffic, which is why this is opt-in rather than
+   * something the mounted examples turn on.
+   *
+   * What it is *for*: several agents behind one origin. The origin then stops
+   * identifying which agent a caller was authorized to reach. Nothing leaks
+   * without it — each Durable Object is keyed by the verified `identity.key`, so
+   * callers remain isolated regardless — but "which agent was this token for"
+   * stops being a question anything asks, and this is where it would be asked.
    *
    * ```ts
+   * // Only once the gateway mints this same string for this agent:
    * audience: (url) => `${url.origin}/proactive`
    * ```
-   *
-   * With one agent per Worker the default is exactly right and the origin *is*
-   * the agent. With several, the origin stops identifying which one a caller was
-   * authorized to reach — the DO is still keyed by the verified `identity.key`,
-   * so nothing leaks across callers, but "which agent was this token for" is no
-   * longer a question anyone is asking. This is where it gets asked.
-   *
-   * Whatever is set here must match the `aud` the gateway mints for this agent,
-   * which it takes from the card's interface `url` — so scope it to the same
-   * prefix as {@link rpcPath}.
    */
   audience?: string | ((url: URL) => string);
   /**
@@ -215,14 +229,31 @@ function pushConfigError(rpcBody: {
  * const handler = createA2AWorker({ manifest, resolveAgent: getAgent, startTurn });
  * export default { fetch: handler } satisfies ExportedHandler<Env>;
  * ```
+ *
+ * Two overloads, because `secrets` is optional for exactly one shape of `env`.
+ * An `env` carrying the two documented names needs no reader; anything else has
+ * to say where its keys live, and the type system is where that gets enforced —
+ * the alternative is a `parsePrivateJwk` failure on the first request, which is
+ * both later and much harder to read.
  */
-export function createA2AWorker<TEnv extends A2ASecretsEnv | object>(
+// An `env` with the documented names: the default reader works, `secrets` is optional.
+export function createA2AWorker<TEnv extends A2ASecretsEnv>(
+  options: A2AWorkerOptions<TEnv>
+): (request: Request, env: TEnv) => Promise<Response>;
+// Anything else — a renamed or per-agent key — must supply the reader.
+export function createA2AWorker<TEnv extends object>(
+  options: A2AWorkerOptions<TEnv> & {
+    secrets: (env: TEnv) => A2ASecrets;
+  }
+): (request: Request, env: TEnv) => Promise<Response>;
+export function createA2AWorker<TEnv extends object>(
   options: A2AWorkerOptions<TEnv>
 ): (request: Request, env: TEnv) => Promise<Response> {
   const jwksPath = options.jwksPath ?? JWKS_PATH;
+  const rpcPath = options.rpcPath ?? A2A_RPC_PATH;
   const requirePushConfig = options.requirePushConfig ?? true;
-  // The default reads the two documented names, which is why `TEnv` still has to
-  // satisfy `A2ASecretsEnv` unless a consumer supplies its own reader.
+  // Only reachable through the first overload, which has already established
+  // that `TEnv` carries the two documented names.
   const readSecrets =
     options.secrets ??
     ((env: TEnv): A2ASecrets => ({
@@ -263,7 +294,13 @@ export function createA2AWorker<TEnv extends A2ASecretsEnv | object>(
     }
 
     // (3) A2A JSON-RPC — gateway-authenticated, dispatched into the caller's DO.
-    if (request.method === "POST") {
+    //
+    // Matched on `rpcPath`, not on the method alone. Accepting every POST made
+    // the path this agent advertises purely decorative: a call to any URL on the
+    // origin was served as JSON-RPC, so a mounted agent's isolation rested
+    // entirely on an outer router matching first, and a typo'd endpoint quietly
+    // worked instead of 404ing.
+    if (request.method === "POST" && url.pathname === rpcPath) {
       const token = bearerToken(request);
       if (!token) return unauthorized("missing gateway bearer token");
 
