@@ -121,21 +121,30 @@ function buildTaskUpdate(
 /**
  * A non-terminal `working` Task snapshot carrying an intermediate content message.
  * Streamed live from the DO as the tool loop emits content before the final reply.
- * `messageId` is derived from `${taskId}:${stepIndex}` — stable across re-runs (see
+ *
+ * `messageId` is derived from `${taskId}:${key}` — stable across re-runs (see
  * {@link agentTextMessage}) so the gateway dedupes correctly on workflow replay.
+ *
+ * `key` is a **semantic** string, not a step counter, and the distinction is
+ * load-bearing: an agent that runs several rounds per task emits progress from
+ * each, so a bare index makes round 0's third step and round 1's third step the
+ * same message to the gateway — it dedupes the second away and the user watches
+ * a task go quiet. A caller that genuinely has one flat sequence can pass
+ * `String(i)`; one with rounds should key on both (`r1:step:3`), and milestones
+ * on what they are (`ack:1`).
  */
 export function buildWorkingTask(
   taskId: string,
   contextId: string,
   text: string,
-  stepIndex: number
+  key: string
 ): PlainTask {
   return buildTaskUpdate(
     taskId,
     contextId,
     TaskState.TASK_STATE_WORKING,
     text,
-    `${taskId}:${stepIndex}`
+    `${taskId}:${key}`
   );
 }
 

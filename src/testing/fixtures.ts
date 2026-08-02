@@ -1,3 +1,24 @@
+/**
+ * `@loopingai/core/testing/fixtures` — the **realm-neutral** slice of the
+ * harness: fixed keys, origins, and task/message builders.
+ *
+ * Its own subpath because it is the one part a consumer's `vitest.config.ts`
+ * needs, and that file runs in **Node**. The `/testing` barrel pulls in
+ * `cloudflare:test` (DO helpers) and `vitest` (the VCR spec hooks), so importing
+ * it from a config fails at load with `ERR_UNSUPPORTED_ESM_URL_SCHEME` before a
+ * single test runs. Nothing here imports either, so it is safe from a config, a
+ * spec, or a plain Node script.
+ *
+ * Seeding the required secrets from these values is the intended use:
+ *
+ * ```ts
+ * // vitest.config.ts
+ * import { GATEWAY_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "@loopingai/core/testing/fixtures";
+ *
+ * process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
+ * process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
+ * ```
+ */
 import { type JWK } from "jose";
 import { Role, type Message, type Task, type TaskState } from "@a2a-js/sdk";
 

@@ -167,6 +167,122 @@ describe("gateway authentication", () => {
   });
 });
 
+/**
+ * Several agents in one Worker, each behind its own path prefix.
+ *
+ * Everything a mount answers on is already an option, so the only two things
+ * that had to give were the pair of facts derived from the *origin*: which key
+ * signs, and which audience a token must carry. With one agent per Worker the
+ * origin is the agent and both defaults are right; with several it stops
+ * identifying anything, which is what these specs pin.
+ */
+describe("several agents mounted in one Worker", () => {
+  interface MultiEnv {
+    A2A_SIGNING_KEY_PROACTIVE: string;
+    GATEWAY_ORIGINS: string;
+  }
+
+  const multiEnv: MultiEnv = {
+    A2A_SIGNING_KEY_PROACTIVE: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
+    GATEWAY_ORIGINS: JSON.stringify([GATEWAY_ORIGIN])
+  };
+
+  const mounted = createA2AWorker<MultiEnv>({
+    manifest,
+    resolveAgent,
+    startTurn: async () => {},
+    rpcPath: "/proactive/a2a",
+    jwksPath: "/proactive/.well-known/jwks.json",
+    audience: (url) => `${url.origin}/proactive`,
+    secrets: (e) => ({
+      signingKey: e.A2A_SIGNING_KEY_PROACTIVE,
+      gatewayOrigins: e.GATEWAY_ORIGINS
+    })
+  });
+
+  it("reads its signing key from the renamed secret", async () => {
+    // `env` here carries no `A2A_SIGNING_KEY` at all, so serving a card proves
+    // the rename is what was read rather than a fallback finding the default.
+    const res = await mounted(
+      new Request(`${AGENT_ORIGIN}/proactive/.well-known/jwks.json`),
+      multiEnv
+    );
+    const body = await res.json<{ keys: Record<string, unknown>[] }>();
+
+    expect(res.status).toBe(200);
+    expect(body.keys[0].kid).toBe(TEST_AGENT_PRIVATE_JWK.kid);
+    expect(body.keys[0]).not.toHaveProperty("d");
+  });
+
+  it("advertises and signs under its own prefix", async () => {
+    const res = await mounted(
+      new Request(`${AGENT_ORIGIN}/proactive/${AGENT_CARD_PATH}`),
+      multiEnv
+    );
+    const card = await res.json<{
+      supportedInterfaces: { url: string }[];
+      signatures: { protected: string }[];
+    }>();
+
+    expect(card.supportedInterfaces[0].url).toBe(
+      `${AGENT_ORIGIN}/proactive/a2a`
+    );
+
+    // The `jku` has to resolve to *this* mount's JWKS, not the Worker root —
+    // a gateway fetches the card's key from exactly this URL.
+    const header = JSON.parse(
+      atob(card.signatures[0].protected.replace(/-/g, "+").replace(/_/g, "/"))
+    );
+    expect(header.jku).toBe(`${AGENT_ORIGIN}/proactive/.well-known/jwks.json`);
+  });
+
+  it("refuses a token minted for a sibling mount", async () => {
+    // The reason `audience` exists. Both mounts share an origin, so without it
+    // this token verifies here too and "which agent was this for" is a question
+    // nothing in the system is asking.
+    const token = await makeGatewayToken({
+      audience: `${AGENT_ORIGIN}/reactive`
+    });
+    const res = await mounted(
+      new Request(`${AGENT_ORIGIN}/proactive/a2a`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(sendMessage({}))
+      }),
+      multiEnv
+    );
+
+    expect(res.status).toBe(401);
+  });
+
+  it("accepts a token minted for its own mount", async () => {
+    const token = await makeGatewayToken({
+      audience: `${AGENT_ORIGIN}/proactive`,
+      identity: { name: "anonymous" }
+    });
+    const res = await mounted(
+      new Request(`${AGENT_ORIGIN}/proactive/a2a`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(sendMessage({}))
+      }),
+      multiEnv
+    );
+
+    // 400, not 401: the token verified, and the call died one step later on the
+    // keyless identity. That is the assertion — anything 401 would mean the
+    // audience check rejected it.
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/identity missing key/);
+  });
+});
+
 describe("the accept-and-notify contract", () => {
   const authed = async (params: unknown) =>
     worker(

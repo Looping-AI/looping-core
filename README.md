@@ -85,6 +85,38 @@ That handler serves three routes: the public JWKS, a **signed** AgentCard at
 `/.well-known/agent-card.json`, and gateway-authenticated JSON-RPC. Every POST is
 verified before a Durable Object is ever addressed.
 
+#### Several agents in one Worker
+
+Every path is an option, so you can mount one handler per prefix behind your own router
+and give each agent its own card, JWKS and Durable Object. Two options exist for that
+case and only that case:
+
+```ts
+const proactive = createA2AWorker<Env>({
+  manifest: proactiveManifest,
+  rpcPath: "/proactive/a2a",
+  jwksPath: "/proactive/.well-known/jwks.json",
+  // Each mount signs with its own key — they share an `env`, so they cannot all
+  // read `A2A_SIGNING_KEY`.
+  secrets: (env) => ({
+    signingKey: env.A2A_SIGNING_KEY_PROACTIVE,
+    gatewayOrigins: env.GATEWAY_ORIGINS
+  }),
+  // …and requires its own audience, so a token minted for `/reactive` does not
+  // verify here. Nothing leaks without it — the DO is still keyed by the verified
+  // `identity.key` — but the origin stops identifying *which* agent a caller was
+  // authorized to reach, and this is where that gets asked.
+  audience: (url) => `${url.origin}/proactive`,
+  resolveAgent,
+  startTurn
+});
+```
+
+Pass the request through unmodified — do not strip the prefix. The handler matches the
+full `jwksPath` and the card path's suffix, so prefixed paths work with no rewriting, and
+the card's `jku` stays resolvable. With one agent per Worker both options are unnecessary
+and the defaults are exactly right.
+
 ### 3. Build the runtime in your Durable Object
 
 Everything that would otherwise be a module-level constant is resolved once per DO

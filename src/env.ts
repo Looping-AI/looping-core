@@ -9,8 +9,10 @@
  * with no cast.
  *
  * The two secrets are the zero-trust contract and are the only names core
- * insists on; everything else is passed in. `createA2AWorker` lets a consumer
- * rename even these — see {@link file://./worker/index.ts}.
+ * insists on; everything else is passed in. Even these are only a *default*:
+ * `createA2AWorker`'s `secrets` option reads them from wherever a consumer keeps
+ * them, which is what lets several agents share one Worker without sharing one
+ * signing identity. See {@link file://./worker/index.ts}.
  */
 
 /** Workers AI, backing the chat loop (and whatever a plugin runs on it). */

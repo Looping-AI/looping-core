@@ -40,6 +40,14 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  *
  * No secret is ever shared in either direction: trust flows entirely on domains
  * and asymmetric (Ed25519) signatures over public JWKS.
+ *
+ * **Several agents may share one Worker.** Every path this handler answers on is
+ * an option (`rpcPath`, `jwksPath`), so a consumer mounts one handler per prefix
+ * behind its own router and each agent gets its own card, JWKS and DO. Two
+ * options exist for that case and only that case: `secrets`, so each mount signs
+ * with its own key, and `audience`, so a token minted for one mount does not
+ * verify at another. With one agent per Worker both defaults are correct and
+ * neither needs setting.
  */
 
 /** Default path serving the card-signing public JWKS (the card's `jku`). */
@@ -48,7 +56,15 @@ export const JWKS_PATH = "/.well-known/jwks.json";
 /** The JSON-RPC method carrying a turn (v1.0 renamed v0.3's `message/send`). */
 const SEND_MESSAGE_METHOD = "SendMessage";
 
-export interface A2AWorkerOptions {
+/** The two secrets a mount signs and verifies with, already read off `env`. */
+export interface A2ASecrets {
+  /** Ed25519 private JWK, as JSON. See {@link A2ASecretsEnv.A2A_SIGNING_KEY}. */
+  signingKey: string;
+  /** Origin allowlist. See {@link A2ASecretsEnv.GATEWAY_ORIGINS}. */
+  gatewayOrigins: string;
+}
+
+export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
   /** The transport-independent half of this agent's card. */
   manifest: AgentManifest;
   /** Resolve the agent DO stub for a verified caller. */
@@ -59,6 +75,47 @@ export interface A2AWorkerOptions {
   jwksPath?: string;
   /** Path this agent answers JSON-RPC on. Defaults to `/a2a`. */
   rpcPath?: string;
+  /**
+   * Where to read this mount's two secrets. Defaults to the documented names,
+   * `env.A2A_SIGNING_KEY` and `env.GATEWAY_ORIGINS`.
+   *
+   * Exists for the one case the defaults cannot serve: **several agents mounted
+   * in one Worker**, each with its own signing identity. They share an `env`, so
+   * they cannot all read `A2A_SIGNING_KEY`.
+   *
+   * ```ts
+   * secrets: (env) => ({
+   *   signingKey: env.A2A_SIGNING_KEY_PROACTIVE,
+   *   gatewayOrigins: env.GATEWAY_ORIGINS
+   * })
+   * ```
+   *
+   * Renaming does not weaken anything: the same key is still Ed25519, still
+   * signs the card and every callback JWT, and its public half is still what the
+   * gateway pins. Only where it is read from changes.
+   */
+  secrets?: (env: TEnv) => A2ASecrets;
+  /**
+   * The audience a gateway JWT must carry. Defaults to the request origin.
+   *
+   * Override it when several agents share an origin, so a token minted for one
+   * mount does not verify at another:
+   *
+   * ```ts
+   * audience: (url) => `${url.origin}/proactive`
+   * ```
+   *
+   * With one agent per Worker the default is exactly right and the origin *is*
+   * the agent. With several, the origin stops identifying which one a caller was
+   * authorized to reach — the DO is still keyed by the verified `identity.key`,
+   * so nothing leaks across callers, but "which agent was this token for" is no
+   * longer a question anyone is asking. This is where it gets asked.
+   *
+   * Whatever is set here must match the `aud` the gateway mints for this agent,
+   * which it takes from the card's interface `url` — so scope it to the same
+   * prefix as {@link rpcPath}.
+   */
+  audience?: string | ((url: URL) => string);
   /**
    * Advertise `securitySchemes` on the card. **Defaults to `false`** — see
    * `BuildCardOptions.advertiseSecuritySchemes` for why, and read that note
@@ -159,16 +216,29 @@ function pushConfigError(rpcBody: {
  * export default { fetch: handler } satisfies ExportedHandler<Env>;
  * ```
  */
-export function createA2AWorker<TEnv extends A2ASecretsEnv>(
-  options: A2AWorkerOptions
+export function createA2AWorker<TEnv extends A2ASecretsEnv | object>(
+  options: A2AWorkerOptions<TEnv>
 ): (request: Request, env: TEnv) => Promise<Response> {
   const jwksPath = options.jwksPath ?? JWKS_PATH;
   const requirePushConfig = options.requirePushConfig ?? true;
+  // The default reads the two documented names, which is why `TEnv` still has to
+  // satisfy `A2ASecretsEnv` unless a consumer supplies its own reader.
+  const readSecrets =
+    options.secrets ??
+    ((env: TEnv): A2ASecrets => ({
+      signingKey: (env as A2ASecretsEnv).A2A_SIGNING_KEY,
+      gatewayOrigins: (env as A2ASecretsEnv).GATEWAY_ORIGINS
+    }));
 
   return async function fetch(request: Request, env: TEnv): Promise<Response> {
     const url = new URL(request.url);
     const origin = url.origin;
-    const privateJwk = parsePrivateJwk(env.A2A_SIGNING_KEY);
+    const secrets = readSecrets(env);
+    const audience =
+      typeof options.audience === "function"
+        ? options.audience(url)
+        : (options.audience ?? origin);
+    const privateJwk = parsePrivateJwk(secrets.signingKey);
     const cardOptions = {
       origin,
       rpcPath: options.rpcPath,
@@ -200,8 +270,8 @@ export function createA2AWorker<TEnv extends A2ASecretsEnv>(
       let identity: GatewayIdentity;
       try {
         ({ identity } = await verifyGatewayToken(token, {
-          allowedOrigins: parseGatewayOrigins(env.GATEWAY_ORIGINS),
-          audience: origin,
+          allowedOrigins: parseGatewayOrigins(secrets.gatewayOrigins),
+          audience,
           identityClaim: options.identityClaim
         }));
       } catch (err) {

@@ -144,6 +144,27 @@ export function deterministicSessionMessage(
   };
 }
 
+/**
+ * A Sessions-store message with a fresh random id.
+ *
+ * The counterpart to {@link deterministicSessionMessage}, and choosing between
+ * them is a real decision rather than a style one. A deterministic id makes an
+ * append **idempotent**, which is what a durable-Workflow agent needs: its round
+ * can re-run after a crash, and the id is what stops the retry from duplicating a
+ * turn or rewriting a reply the user already received.
+ *
+ * A conversational agent that answers inline has no such replay to defend
+ * against — every turn is a new message and there is no step to re-enter — so a
+ * random id is correct and a synthesized deterministic one would be a lie about
+ * what is being deduplicated.
+ */
+export function sessionMessage(
+  role: "user" | "assistant",
+  text: string
+): SessionMessage {
+  return deterministicSessionMessage(crypto.randomUUID(), role, text);
+}
+
 /** Concatenate the text parts of a stored session message. */
 export function sessionText(m: SessionMessage): string {
   return m.parts
