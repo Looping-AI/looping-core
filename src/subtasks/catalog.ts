@@ -29,10 +29,11 @@ export interface ReferenceCatalogEntry extends SubtaskReference {
  * predicate, one walk — the marked messages and the catalog indices cannot drift.
  *
  * What that leaves eligible: verbatim `user` and `assistant` turns with content.
- * Recall results, system prompts, and context blocks never appear as plain
- * history messages, so they are excluded structurally. Whitespace-only turns are
- * skipped — there is nothing to reference, and since the model only ever selects
- * from the catalog the renderer returns, skipping them cannot misalign indices.
+ * System prompts, context blocks, and anything a tool injected never appear as
+ * plain history messages, so they are excluded structurally. Whitespace-only
+ * turns are skipped — there is nothing to reference, and since the model only
+ * ever selects from the catalog the renderer returns, skipping them cannot
+ * misalign indices.
  *
  * The inbound user turn is appended to the Session before the round infers, so
  * one catalog covers both the current task input and past turns. The selected

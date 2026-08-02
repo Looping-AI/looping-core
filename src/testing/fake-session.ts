@@ -16,7 +16,7 @@ import type { SessionLike } from "../agent/session.js";
 export class FakeSession implements SessionLike {
   messages: SessionMessage[] = [];
   system = "SOUL BLOCK\n\n## memory\n(empty)";
-  /** Compaction overlays to report — non-empty gates the `recall` tool on. */
+  /** Compaction overlays to report — non-empty ⇒ history has been displaced. */
   compactions: unknown[] = [];
 
   appendMessage(m: SessionMessage) {

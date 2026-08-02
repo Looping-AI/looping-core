@@ -1,6 +1,5 @@
 import { createWorkersAI } from "workers-ai-provider";
 import type { LanguageModel } from "ai";
-import { embedMany } from "ai";
 import type { ModelConfig } from "../config.js";
 
 /**
@@ -11,13 +10,6 @@ import type { ModelConfig } from "../config.js";
  * Workers, and a module constant cannot be overridden by a consumer. So this is
  * a factory over an injected binding and an injected {@link ModelConfig}.
  */
-
-/**
- * Embed a batch of texts for episodic recall. Uses the same Workers-AI + AI
- * Gateway path as the chat models so embeddings get the same gateway
- * observability/caching. The output dimension must match the Vectorize index.
- */
-export type Embed = (texts: string[]) => Promise<number[][]>;
 
 /**
  * Custom metadata attached to the AI Gateway log for every call a pair makes.
@@ -63,7 +55,6 @@ export interface ModelRuntime {
    * `validateRecipe` is the single validation owner for recipe-supplied ids.
    */
   createModelPair(overrides?: ModelOverrides): ModelPair;
-  embedTexts: Embed;
 }
 
 export interface ModelRuntimeDeps {
@@ -122,18 +113,6 @@ export function createModelRuntime(deps: ModelRuntimeDeps): ModelRuntime {
         primaryId: () => primaryId,
         fallbackId: () => fallbackId
       };
-    },
-
-    async embedTexts(texts: string[]): Promise<number[][]> {
-      if (texts.length === 0) return [];
-      const { embeddings } = await embedMany({
-        model: workersai().embedding(config.embeddingModelId),
-        values: texts,
-        // Failures surface to the caller (best-effort archival swallows them);
-        // the SDK's retry/backoff would only add latency on a hard failure.
-        maxRetries: 0
-      });
-      return embeddings;
     }
   };
 }

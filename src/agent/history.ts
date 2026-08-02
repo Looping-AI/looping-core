@@ -8,9 +8,9 @@ import type { SessionMessage } from "agents/experimental/memory/session";
  * A2A adapter} has already reduced the inbound message to a plain string.
  *
  * The gateway inlines a `<turn from="…" id="…" channel="…" at="…">…</turn>` tag
- * into the message text in multi-actor channels so the model (and, in later
- * phases, recall) can attribute "who said what". This agent only *parses* that
- * wrapper — it never authors one.
+ * into the message text in multi-actor channels so the model — and anything
+ * downstream that needs per-message provenance — can attribute "who said what".
+ * This agent only *parses* that wrapper; it never authors one.
  *
  * We persist only the user turn and the assistant's final text: intra-turn tool
  * steps stay inside the single `generateText` call, so stored history is plain

@@ -32,11 +32,6 @@ export interface ModelConfig {
   maxOutputTokens: number;
   /** Reasoning budget forwarded on the binding's `inputs` by workers-ai-provider. */
   reasoningEffort: "low" | "medium" | "high";
-  /**
-   * Embedding model backing recall. Its dimension/metric must match the
-   * Vectorize index (1024-dim, cosine); changing it means recreating the index.
-   */
-  embeddingModelId: string;
 }
 
 /**
@@ -93,18 +88,6 @@ export interface SessionConfig {
   memoryDescription: string;
 }
 
-/** Episodic-recall (Vectorize) tuning. */
-export interface RecallConfig {
-  /** Default number of archived messages one `recall` query returns. */
-  topK: number;
-  /**
-   * Max chars of a message's text stored in its vector metadata. Keeps each
-   * vector under Vectorize's ~10 KiB/vector limit; recall returns this snippet
-   * plus provenance, not the full original message.
-   */
-  metadataTextMax: number;
-}
-
 export interface CoreConfig {
   model: ModelConfig;
   /** What bounds the MAIN agent across every round of one task. */
@@ -137,7 +120,6 @@ export interface CoreConfig {
    */
   maxSubtasks: number;
   session: SessionConfig;
-  recall: RecallConfig;
 }
 
 /**
@@ -151,8 +133,7 @@ export const DEFAULT_CORE_CONFIG: CoreConfig = {
     fallbackChatModelId: "@cf/moonshotai/kimi-k2.7-code",
     aiGatewayId: "default",
     maxOutputTokens: 16_384,
-    reasoningEffort: "medium",
-    embeddingModelId: "@cf/baai/bge-m3"
+    reasoningEffort: "medium"
   },
   mainAgentLimits: { maxTurns: 20, maxWallMs: 60 * 60_000 },
   subagentLimits: { maxTurns: 20, maxWallMs: 30 * 60_000 },
@@ -165,8 +146,7 @@ export const DEFAULT_CORE_CONFIG: CoreConfig = {
     memoryDescription:
       "Durable facts worth remembering across all of this caller's conversations — " +
       "stable preferences, decisions, people, and context. Keep it concise."
-  },
-  recall: { topK: 5, metadataTextMax: 2000 }
+  }
 };
 
 /** One level of optionality per nested group — enough for a config this shallow. */
@@ -205,8 +185,7 @@ export function resolveConfig(overrides: CoreConfigOverrides = {}): CoreConfig {
     toolOutputWindow:
       overrides.toolOutputWindow ?? DEFAULT_CORE_CONFIG.toolOutputWindow,
     maxSubtasks: overrides.maxSubtasks ?? DEFAULT_CORE_CONFIG.maxSubtasks,
-    session: { ...DEFAULT_CORE_CONFIG.session, ...overrides.session },
-    recall: { ...DEFAULT_CORE_CONFIG.recall, ...overrides.recall }
+    session: { ...DEFAULT_CORE_CONFIG.session, ...overrides.session }
   };
 
   const positive = (value: number, name: string): void => {

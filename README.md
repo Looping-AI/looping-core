@@ -207,6 +207,23 @@ its cause.
 The contract is **additive-only within a major**: new capabilities arrive as optional
 fields on `AgentPlugin`.
 
+The one session hook core offers is `onMessagesDisplaced` — the raw messages a compaction
+is about to fold into a summary. Core performs the compaction, so core announces the loss;
+it neither stores the messages nor knows who wants them. An episodic-memory plugin, an
+audit log, and a cold-storage dump all want exactly this callback, and each gets it:
+
+```ts
+// in your DO, wiring the runtime's fan-out into the session
+buildAgentSession(this, model, {
+  …,
+  onMessagesDisplaced: this.runtime.onMessagesDisplaced
+});
+```
+
+Best-effort in both directions — a listener that throws never aborts compaction (history
+must still shorten when a side store is down), and the fan-out is `Promise.allSettled`, so
+one plugin's outage cannot cost another its notification.
+
 ---
 
 ## Testing
@@ -246,7 +263,9 @@ await withDb("accepts a turn once", async (db) => {
 - The main agent's soul. Core ships no prompt copy.
 - Config _values_ — model ids, budgets, limits. Core ships the shapes and safe
   defaults, and `resolveConfig` validates your overrides.
-- Vectorize recall, browser tools, shell. All optional → plugins.
+- Vectorize recall, browser tools, shell. All optional → plugins. Core contains no
+  embedding code at all: it ships the `onMessagesDisplaced` hook and nothing about what
+  a listener does with the messages — no embedding model, no index, no dimension.
 
 ---
 

@@ -57,7 +57,6 @@ export {
   type CoreConfig,
   type CoreConfigOverrides,
   type ModelConfig,
-  type RecallConfig,
   type SessionConfig
 } from "./config.js";
 

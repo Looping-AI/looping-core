@@ -1,4 +1,5 @@
 import type { ToolSet } from "ai";
+import type { SessionMessage } from "agents/experimental/memory/session";
 import {
   resolveConfig,
   type CoreConfig,
@@ -71,6 +72,16 @@ export interface AgentRuntime {
    * when none declares one, so a call site can append unconditionally.
    */
   renderCapabilities(): string;
+  /**
+   * Announce the messages a compaction is folding into a summary to every plugin
+   * declaring {@link AgentPlugin.onMessagesDisplaced}. Pass it straight to
+   * `buildAgentSession`'s option of the same name — it reads no `this`, so the
+   * bare reference works.
+   *
+   * Never rejects: listeners are fanned out with `Promise.allSettled` and each
+   * rejection is logged against the plugin key that caused it.
+   */
+  onMessagesDisplaced(messages: SessionMessage[]): Promise<void>;
 
   /**
    * Resolve the session state an execution needs, by asking the plugin that owns
@@ -149,6 +160,12 @@ export function createAgentRuntime(
 
   const stores = plugins.flatMap((p) => (p.store ? [p.store] : []));
 
+  const displacementListeners = plugins.flatMap((p) =>
+    p.onMessagesDisplaced
+      ? [{ key: p.key, notify: p.onMessagesDisplaced.bind(p) }]
+      : []
+  );
+
   const secrets = [
     ...new Set(plugins.flatMap((p) => [...(p.requires?.secrets ?? [])]))
   ];
@@ -218,6 +235,35 @@ export function createAgentRuntime(
         if (plugin.capability) blocks.push(plugin.capability);
       }
       return blocks.join("\n\n");
+    },
+
+    async onMessagesDisplaced(messages: SessionMessage[]): Promise<void> {
+      // allSettled, not all: `all` rejects at the first listener to throw and
+      // stops awaiting the rest, so every other plugin's write is still in
+      // flight when this returns — and on a Durable Object the isolate can be
+      // evicted before it lands. One plugin's outage would silently cost the
+      // others their writes. Each rejection is logged against the key that
+      // caused it; an anonymous aggregate is not debuggable across plugins.
+      //
+      // The `async` on the map callback is load-bearing, not style. A listener
+      // is typed `(messages) => Promise<void>`, which does not oblige it to be
+      // `async` — one that reads a binding before starting its async work can
+      // throw *synchronously*, during this very `.map()`. Without the `async`
+      // that throw escapes before `Promise.allSettled` exists to catch it: this
+      // method rejects despite documenting that it never does, and `.map()`
+      // aborts mid-iteration so every listener after the thrower is never even
+      // invoked — strictly worse than the `Promise.all` failure mode above.
+      const results = await Promise.allSettled(
+        displacementListeners.map(async (l) => l.notify(messages))
+      );
+      results.forEach((result, i) => {
+        if (result.status === "rejected") {
+          console.error(
+            `[runtime] plugin "${displacementListeners[i].key}" failed on displaced messages`,
+            result.reason
+          );
+        }
+      });
     },
 
     async resolveRuntime(ctx: ResolveRuntimeContext): Promise<SubtaskRuntime> {

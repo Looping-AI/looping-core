@@ -13,7 +13,7 @@
  * rename even these — see {@link file://./worker/index.ts}.
  */
 
-/** Workers AI, backing both the chat loop and embeddings. */
+/** Workers AI, backing the chat loop (and whatever a plugin runs on it). */
 export interface AiEnv {
   AI: Ai;
 }
