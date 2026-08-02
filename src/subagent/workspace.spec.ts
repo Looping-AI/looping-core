@@ -85,6 +85,28 @@ describe("makeWorkspaceHandle", () => {
     // how many files exist, not how often they are written.
     await expect(ws.write("f0.txt", "y")).resolves.toBeUndefined();
   });
+
+  it("counts a write to a directory path as a new file, not an overwrite", async () => {
+    // `exists()` is true for a directory on any backing with filesystem
+    // semantics, so a cap check that trusted it let a write to `notes` — with
+    // `notes/a.txt` present — through as an overwrite, putting a 201st file in
+    // a 200-file workspace.
+    const backing = memoryWorkspaceBacking();
+    const ws = makeWorkspaceHandle(backing);
+    await ws.write("notes/a.txt", "x");
+    for (let i = 0; i < WORKSPACE_MAX_FILES - 1; i++) {
+      await ws.write(`f${i}.txt`, "x");
+    }
+    expect(await backing.getWorkspaceInfo()).toEqual({
+      fileCount: WORKSPACE_MAX_FILES
+    });
+    expect(await ws.exists("notes")).toBe(true);
+
+    await expect(ws.write("notes", "x")).rejects.toThrow(WorkspaceLimitError);
+    expect(await backing.getWorkspaceInfo()).toEqual({
+      fileCount: WORKSPACE_MAX_FILES
+    });
+  });
 });
 
 describe("memoryWorkspaceBacking", () => {

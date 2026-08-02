@@ -11,69 +11,83 @@ import { cassetteNameFor } from "./vcr-spec.js";
  * as "works on my machine, missing cassette in CI", so it is pinned here.
  */
 
-/** Minimal task tree: a File task at the root, then nested describe suites. */
-function task(filepath: string, name: string, suites: string[] = []) {
-  // Only the three fields the derivation reads are populated; casting through
+/**
+ * Minimal task tree: a File task at the root, then nested describe suites.
+ * `rel` is Vitest's project-relative `file.name`; `filepath` is absolute and is
+ * only reached by the fallback.
+ */
+function task(
+  rel: string,
+  name: string,
+  suites: string[] = [],
+  filepath = `/home/dev/repo/${rel}`
+) {
+  // Only the fields the derivation reads are populated; casting through
   // `unknown` because a real task carries a dozen more that nothing here needs.
   let suite = { filepath } as unknown as RunnerTestSuite;
   for (const suiteName of suites) {
     suite = { name: suiteName, suite } as unknown as RunnerTestSuite;
   }
-  return { name, suite, file: { filepath } } as unknown as RunnerTestCase;
+  return {
+    name,
+    suite,
+    file: { name: rel, filepath }
+  } as unknown as RunnerTestCase;
 }
 
 describe("cassetteNameFor", () => {
-  it("names a spec under test/ by its path below test/", () => {
+  it("names a spec by its project-relative path", () => {
     expect(
-      cassetteNameFor(
-        task("/home/dev/repo/test/arc-agi/recorded.spec.ts", "plays a game")
-      )
-    ).toBe("arc-agi-recorded--plays-a-game.snapshot.json");
+      cassetteNameFor(task("test/arc-agi/recorded.spec.ts", "plays a game"))
+    ).toBe("test-arc-agi-recorded--plays-a-game.snapshot.json");
   });
 
   it("names a spec beside its code under src/ the same way", () => {
-    // Core's own convention, and a consumer's may match it. Before this, such a
-    // spec had no `/test/` to split on and got the whole absolute path.
     expect(
-      cassetteNameFor(
-        task("/home/dev/repo/src/arc-agi/recorded.spec.ts", "plays a game")
-      )
-    ).toBe("arc-agi-recorded--plays-a-game.snapshot.json");
+      cassetteNameFor(task("src/arc-agi/recorded.spec.ts", "plays a game"))
+    ).toBe("src-arc-agi-recorded--plays-a-game.snapshot.json");
   });
 
-  it("falls back to the bare filename under neither root", () => {
-    expect(
-      cassetteNameFor(task("/home/dev/repo/recorded.spec.ts", "a b"))
-    ).toBe("recorded--a-b.snapshot.json");
+  it("keeps two specs of the same name under different roots apart", () => {
+    // The store is keyed solely by this filename, so a collision means one
+    // recording overwrites the other and playback then serves the wrong
+    // responses — silently, and only for whichever test ran second.
+    const inTest = cassetteNameFor(task("test/api.spec.ts", "fetches"));
+    const inSrc = cassetteNameFor(task("src/api.spec.ts", "fetches"));
+    expect(inTest).not.toBe(inSrc);
   });
 
-  it("ignores a test/ or src/ segment in the path above the repo", () => {
-    // The actual defect. `~/src/work/…` is an ordinary layout, and cutting at
-    // the *first* match would put the developer's directory names into a
-    // committed filename — different per machine, so CI could never find it.
-    expect(
-      cassetteNameFor(
-        task("/home/dev/src/work/repo/test/recorded.spec.ts", "one")
-      )
-    ).toBe("recorded--one.snapshot.json");
+  it("never puts the developer's own directories into the name", () => {
+    // The first defect here: a path with no recognised root used to fall
+    // through to the *absolute* path, so the cassette was named after whoever
+    // recorded it and CI could never find it. `file.name` is repo-relative by
+    // construction, so the absolute path cannot leak in at all.
+    const name = cassetteNameFor(
+      task("test/recorded.spec.ts", "one", [], "/home/dev/src/work/repo/x.ts")
+    );
+    expect(name).toBe("test-recorded--one.snapshot.json");
+    expect(name).not.toContain("home");
+  });
+
+  it("falls back to the bare filename when the runner supplies no name", () => {
+    const bare = {
+      name: "a b",
+      suite: { filepath: "/repo/recorded.spec.ts" },
+      file: { filepath: "/repo/recorded.spec.ts" }
+    } as unknown as RunnerTestCase;
+    expect(cassetteNameFor(bare)).toBe("recorded--a-b.snapshot.json");
   });
 
   it("includes each describe level, in order, kebab-cased", () => {
     expect(
       cassetteNameFor(
-        task("/repo/test/arc-agi/recorded.spec.ts", "Reads The Score!", [
+        task("test/arc-agi/recorded.spec.ts", "Reads The Score!", [
           "arc (recorded real API)",
           "scoring"
         ])
       )
     ).toBe(
-      "arc-agi-recorded--arc-recorded-real-api--scoring--reads-the-score.snapshot.json"
+      "test-arc-agi-recorded--arc-recorded-real-api--scoring--reads-the-score.snapshot.json"
     );
-  });
-
-  it("handles Windows separators", () => {
-    expect(
-      cassetteNameFor(task("C:\\repo\\test\\arc-agi\\recorded.spec.ts", "one"))
-    ).toBe("arc-agi-recorded--one.snapshot.json");
   });
 });

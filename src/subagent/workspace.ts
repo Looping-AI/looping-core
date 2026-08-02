@@ -153,13 +153,21 @@ export function makeWorkspaceHandle(ws: WorkspaceBacking): WorkspaceHandle {
           `file "${path}" is ${bytes} bytes, over the ${WORKSPACE_MAX_FILE_BYTES}-byte limit`
         );
       }
-      if (!(await ws.exists(path))) {
-        const { fileCount } = await ws.getWorkspaceInfo();
-        if (fileCount >= WORKSPACE_MAX_FILES) {
-          throw new WorkspaceLimitError(
-            `workspace already holds ${fileCount} files (max ${WORKSPACE_MAX_FILES})`
-          );
-        }
+      // The cap bounds how many files exist, so it may only refuse a write that
+      // *creates* one. `exists` is the wrong question: it is true for a
+      // directory too (filesystem semantics, which every real backing has), so
+      // at the cap a write to `notes` — with `notes/a.txt` present — read as an
+      // overwrite and added a 201st file. `readFile` returning null is the only
+      // honest test for "there is no file here", and it runs solely when the
+      // workspace is already full, so the ordinary write still costs one call.
+      const { fileCount } = await ws.getWorkspaceInfo();
+      if (
+        fileCount >= WORKSPACE_MAX_FILES &&
+        (await ws.readFile(path)) === null
+      ) {
+        throw new WorkspaceLimitError(
+          `workspace already holds ${fileCount} files (max ${WORKSPACE_MAX_FILES})`
+        );
       }
       await ws.writeFile(path, content);
     },
