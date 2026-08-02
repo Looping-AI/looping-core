@@ -54,11 +54,11 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  * outer router only sends it its own, and is the one place where mounting relies
  * on that router rather than on this handler.
  *
- * Two options exist for the multi-agent case and only that case: `secrets`, so
- * each mount signs with its own key, and `audience`, so a token minted for one
- * mount does not verify at another. With one agent per Worker both defaults are
- * correct and neither should be set — and `audience` in particular must not be
- * set before the calling gateway mints a matching value.
+ * Separating a token minted for one mount from its siblings needs no option:
+ * the gateway JWT's audience is checked against this agent's own endpoint
+ * (`${origin}${rpcPath}`), so a token for `/reactive` is refused at
+ * `/proactive`. One option exists for the multi-agent case and only that case —
+ * `secrets`, so each mount signs its card and callbacks with its own key.
  */
 
 /** Default path serving the card-signing public JWKS (the card's `jku`). */
@@ -107,27 +107,30 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    */
   secrets?: (env: TEnv) => A2ASecrets;
   /**
-   * The audience a gateway JWT must carry. Defaults to the request origin.
+   * The audience a gateway JWT must carry.
    *
-   * **Do not set this without changing your gateway first.** It is one half of a
-   * two-sided contract: whatever is required here has to be exactly what the
-   * calling gateway *mints*, and a mismatch is a 401 on every single request.
-   * looping-gateway currently mints `new URL(agent.a2aEndpoint).origin` — scheme
-   * and host, no path — so the default is the only value that authenticates
-   * against it today. Overriding it to a per-agent value ahead of a matching
-   * gateway change rejects all traffic, which is why this is opt-in rather than
-   * something the mounted examples turn on.
+   * Defaults to this agent's **own endpoint** — `${origin}${rpcPath}`, the same
+   * URL its card advertises as its interface — and that default is almost
+   * certainly what you want. Setting this is for a gateway that mints something
+   * else.
    *
-   * What it is *for*: several agents behind one origin. The origin then stops
-   * identifying which agent a caller was authorized to reach. Nothing leaks
-   * without it — each Durable Object is keyed by the verified `identity.key`, so
-   * callers remain isolated regardless — but "which agent was this token for"
-   * stops being a question anything asks, and this is where it would be asked.
+   * The audience is one half of a two-sided contract: whatever is required here
+   * has to be exactly what the calling gateway *mints*, and a mismatch is a 401
+   * on every request. looping-gateway mints
+   * `new URL(agent.a2aEndpoint).origin + pathname`, which is what this default
+   * matches.
    *
-   * ```ts
-   * // Only once the gateway mints this same string for this agent:
-   * audience: (url) => `${url.origin}/proactive`
-   * ```
+   * **Changed in 0.2.0, and it is a breaking change.** It used to be the bare
+   * origin. That could not distinguish several agents behind one host — a token
+   * minted for `https://host/reactive/a2a` verified identically at
+   * `https://host/proactive/a2a` — so mounting more than one agent per Worker
+   * meant any of them could spend another's token. It was never a data leak,
+   * since each Durable Object keys its state by the verified `identity.key`
+   * regardless, but "which agent was this token issued for" was a question
+   * nothing could answer. Now it can.
+   *
+   * An agent on 0.2.0 and a gateway minting the old origin-only audience do not
+   * interoperate in either direction, so they deploy together.
    */
   audience?: string | ((url: URL) => string);
   /**
@@ -265,10 +268,13 @@ export function createA2AWorker<TEnv extends object>(
     const url = new URL(request.url);
     const origin = url.origin;
     const secrets = readSecrets(env);
+    // This agent's own endpoint, which is also exactly what its card advertises
+    // as its interface — so the value the gateway was registered with and the
+    // value checked here are the same string by construction.
     const audience =
       typeof options.audience === "function"
         ? options.audience(url)
-        : (options.audience ?? origin);
+        : (options.audience ?? `${origin}${rpcPath}`);
     const privateJwk = parsePrivateJwk(secrets.signingKey);
     const cardOptions = {
       origin,

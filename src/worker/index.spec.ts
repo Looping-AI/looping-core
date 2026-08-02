@@ -187,11 +187,11 @@ describe("gateway authentication", () => {
 /**
  * Several agents in one Worker, each behind its own path prefix.
  *
- * Everything a mount answers on is already an option, so the only two things
- * that had to give were the pair of facts derived from the *origin*: which key
- * signs, and which audience a token must carry. With one agent per Worker the
- * origin is the agent and both defaults are right; with several it stops
- * identifying anything, which is what these specs pin.
+ * Only one thing had to become an option for this: which key signs, since the
+ * mounts share an `env` and an agent's key is its identity. The other
+ * origin-derived fact — which audience a token must carry — is handled by the
+ * default now being the agent's *endpoint*, so sibling isolation needs no
+ * configuration and cannot be forgotten.
  */
 describe("several agents mounted in one Worker", () => {
   interface MultiEnv {
@@ -210,7 +210,7 @@ describe("several agents mounted in one Worker", () => {
     startTurn: async () => {},
     rpcPath: "/proactive/a2a",
     jwksPath: "/proactive/.well-known/jwks.json",
-    audience: (url) => `${url.origin}/proactive`,
+    // No `audience`: the default is `${origin}/proactive/a2a` already.
     secrets: (e) => ({
       signingKey: e.A2A_SIGNING_KEY_PROACTIVE,
       gatewayOrigins: e.GATEWAY_ORIGINS
@@ -254,11 +254,11 @@ describe("several agents mounted in one Worker", () => {
   });
 
   it("refuses a token minted for a sibling mount", async () => {
-    // The reason `audience` exists. Both mounts share an origin, so without it
-    // this token verifies here too and "which agent was this for" is a question
-    // nothing in the system is asking.
+    // The reason the default audience is the endpoint. Both mounts share an
+    // origin, so under the old origin-only audience this token verified here
+    // too and either agent could spend the other's.
     const token = await makeGatewayToken({
-      audience: `${AGENT_ORIGIN}/reactive`
+      audience: `${AGENT_ORIGIN}/reactive/a2a`
     });
     const res = await mounted(
       new Request(`${AGENT_ORIGIN}/proactive/a2a`, {
@@ -276,8 +276,10 @@ describe("several agents mounted in one Worker", () => {
   });
 
   it("accepts a token minted for its own mount", async () => {
+    // Exactly what looping-gateway mints for a registered endpoint of
+    // `${AGENT_ORIGIN}/proactive/a2a` — origin + pathname, nothing derived.
     const token = await makeGatewayToken({
-      audience: `${AGENT_ORIGIN}/proactive`,
+      audience: `${AGENT_ORIGIN}/proactive/a2a`,
       identity: { name: "anonymous" }
     });
     const res = await mounted(
