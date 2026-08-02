@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import type { SessionMessage } from "agents/experimental/memory/session";
 import { createAgentRuntime, RuntimeSetupError } from "./index.js";
 import { deterministicSessionMessage } from "../agent/history.js";
@@ -9,8 +9,11 @@ import {
   definePlugin,
   PLUGIN_CONTRACT_VERSION,
   type AgentPlugin,
+  type MainAgentToolContext,
   type ToolFamilyContext
 } from "../contract/plugin.js";
+import type { SessionLike } from "../agent/session.js";
+import { memoryWorkspaceBacking } from "../subagent/workspace.js";
 import { DEFAULT_CORE_CONFIG } from "../config.js";
 import type { ResolvedRecipe, SubtaskTypeSpec } from "../contract/recipe.js";
 
@@ -48,6 +51,17 @@ const subtaskType = (key: string): SubtaskTypeSpec => ({
 
 const noopFamily = (name: string) => () => ({
   tools: { [name]: tool({ description: name, inputSchema: z.object({}) }) }
+});
+
+/**
+ * A `MainAgentToolContext` over a session stub. Only `getCompactions` is ever
+ * read by these specs — it is the one fact a plugin cannot get from config,
+ * which is the whole reason the context exists.
+ */
+const toolCtx = (compactions: unknown[] = []): MainAgentToolContext => ({
+  session: {
+    getCompactions: async () => compactions
+  } as unknown as SessionLike
 });
 
 describe("createAgentRuntime — what it refuses at startup", () => {
@@ -184,13 +198,37 @@ describe("createAgentRuntime — what it composes", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("merges main-agent tools and capability blocks across plugins", () => {
+  it("merges main-agent tools and capability blocks across plugins", async () => {
     const rt = createAgentRuntime({ plugins: [alpha, beta] });
 
-    expect(Object.keys(rt.mainAgentTools())).toEqual(["alphaLookup"]);
+    expect(Object.keys(await rt.mainAgentTools(toolCtx()))).toEqual([
+      "alphaLookup"
+    ]);
     expect(rt.renderCapabilities()).toBe(
       "Alpha capability block.\n\nBeta capability block."
     );
+  });
+
+  it("awaits a plugin that shapes its tool surface from session state", async () => {
+    // The reason `mainAgentTools` may be async at all. A tool whose only possible
+    // answer is "nothing archived yet" costs the model a call to discover that,
+    // and costs every round the tokens to describe it — so a plugin gets to ask
+    // the session before deciding whether to offer one.
+    const archival = definePlugin({
+      key: "archival",
+      mainAgentTools: async (ctx): Promise<ToolSet> =>
+        (await ctx.session.getCompactions()).length > 0
+          ? { search: tool({ description: "s", inputSchema: z.object({}) }) }
+          : {}
+    });
+    const rt = createAgentRuntime({ plugins: [alpha, archival] });
+
+    expect(Object.keys(await rt.mainAgentTools(toolCtx()))).toEqual([
+      "alphaLookup"
+    ]);
+    expect(
+      Object.keys(await rt.mainAgentTools(toolCtx([{ id: "c1" }])))
+    ).toEqual(["alphaLookup", "search"]);
   });
 
   it("returns an empty capability string when no plugin declares one", () => {
@@ -198,6 +236,157 @@ describe("createAgentRuntime — what it composes", () => {
     // of emitting a separator around nothing.
     const rt = createAgentRuntime({ plugins: [definePlugin({ key: "bare" })] });
     expect(rt.renderCapabilities()).toBe("");
+  });
+
+  describe("shouldHandleTurn", () => {
+    // The gate exists because "should I answer this?" degrades when it is asked
+    // of a model already trying to be helpful — and degrades *invisibly*, since
+    // failing to call a decline-tool looks identical to deciding not to.
+    const ctx = {
+      history: [deterministicSessionMessage("m1", "user", "hi all")]
+    };
+    const gate = (key: string, answer: boolean) =>
+      definePlugin({ key, shouldHandleTurn: async () => answer });
+
+    it("handles the turn when no plugin declares a gate", async () => {
+      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      expect(await rt.shouldHandleTurn(ctx)).toBe(true);
+    });
+
+    it("declines when any single gate declines", async () => {
+      // AND, not majority or first-wins: a plugin installed to keep the agent
+      // quiet in a busy channel has to be able to keep it quiet on its own.
+      const rt = createAgentRuntime({
+        plugins: [gate("permissive", true), gate("triage", false)]
+      });
+      expect(await rt.shouldHandleTurn(ctx)).toBe(false);
+    });
+
+    it("consults every gate and handles the turn when all agree", async () => {
+      const asked: string[] = [];
+      const recording = (key: string) =>
+        definePlugin({
+          key,
+          shouldHandleTurn: async () => {
+            asked.push(key);
+            return true;
+          }
+        });
+
+      const rt = createAgentRuntime({
+        plugins: [recording("one"), beta, recording("two")]
+      });
+      expect(await rt.shouldHandleTurn(ctx)).toBe(true);
+      expect(asked).toEqual(["one", "two"]);
+    });
+
+    it("fails open when a gate rejects", async () => {
+      // The asymmetry this whole hook is designed around: a wrong reply is noise
+      // the user sees and ignores, a wrong silence is invisible to the person who
+      // needed an answer. So a broken gate must degrade to the previous
+      // behaviour — run the turn — and never to a mute agent.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const rt = createAgentRuntime({
+        plugins: [
+          definePlugin({
+            key: "broken",
+            shouldHandleTurn: async () => {
+              throw new Error("classifier model unavailable");
+            }
+          })
+        ]
+      });
+
+      expect(await rt.shouldHandleTurn(ctx)).toBe(true);
+      expect(warn.mock.calls[0][0]).toContain("broken");
+      warn.mockRestore();
+    });
+
+    it("fails open on a gate that throws synchronously, and still consults the rest", async () => {
+      // A gate is typed `(ctx) => Promise<boolean>`, which does not oblige it to
+      // be `async`. One that reads a binding before its first await throws during
+      // the `.map()` that builds the promise array — before `allSettled` exists
+      // to catch it — which would both reject this method and abort the
+      // iteration, skipping every gate declared after the thrower.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let consulted = false;
+
+      const rt = createAgentRuntime({
+        plugins: [
+          definePlugin({
+            key: "sync-thrower",
+            // Deliberately not `async` — that would convert the throw into a
+            // rejection for free and reproduce nothing.
+            shouldHandleTurn: () => {
+              throw new Error("AI binding undefined");
+            }
+          }),
+          definePlugin({
+            key: "downstream",
+            shouldHandleTurn: async () => {
+              consulted = true;
+              return false;
+            }
+          })
+        ]
+      });
+
+      // The thrower is counted as `true`; the gate after it still gets to
+      // decline, which is the assertion that matters.
+      expect(await rt.shouldHandleTurn(ctx)).toBe(false);
+      expect(consulted).toBe(true);
+      expect(warn.mock.calls[0][0]).toContain("sync-thrower");
+      warn.mockRestore();
+    });
+  });
+
+  describe("workspaceBacking", () => {
+    const backing = (key: string) =>
+      definePlugin({ key, workspaceBacking: () => memoryWorkspaceBacking() });
+
+    it("falls back to an in-memory backing when no plugin declares one", async () => {
+      // Always defined, so `SubagentRuntime.workspaceBacking` stays required and
+      // a host never writes a null check for a capability it did not install.
+      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      const ws = rt.workspaceBacking({} as SqlStorage, () => "child");
+
+      await ws.writeFile("notes.md", "hello");
+      expect(await ws.readFile("notes.md")).toBe("hello");
+      expect(await ws.getWorkspaceInfo()).toEqual({ fileCount: 1 });
+    });
+
+    it("uses the one a plugin declares, with the facet's own sql and name", async () => {
+      const seen: Array<{ sql: SqlStorage; name: string | undefined }> = [];
+      const sql = {} as SqlStorage;
+      const declared = definePlugin({
+        key: "workspace",
+        workspaceBacking: (s, name) => {
+          seen.push({ sql: s, name: name() });
+          const ws = memoryWorkspaceBacking();
+          void ws.writeFile("marker", "from the declared backing");
+          return ws;
+        }
+      });
+
+      const rt = createAgentRuntime({ plugins: [alpha, declared] });
+      const ws = rt.workspaceBacking(sql, () => "subtask:t1:1");
+
+      expect(await ws.readFile("marker")).toBe("from the declared backing");
+      // Both arguments reach the plugin: the executing facet's *own* SQLite (so
+      // isolation per execution is free) and its lazily-read name.
+      expect(seen).toEqual([{ sql, name: "subtask:t1:1" }]);
+    });
+
+    it("refuses two plugins declaring a backing", () => {
+      // Two backends means two answers to "where did that file go", and the file
+      // lands in whichever the runtime happened to pick.
+      expect(() =>
+        createAgentRuntime({ plugins: [backing("shell"), backing("r2")] })
+      ).toThrow(RuntimeSetupError);
+      expect(() =>
+        createAgentRuntime({ plugins: [backing("shell"), backing("r2")] })
+      ).toThrow(/shell.*r2|r2.*shell/);
+    });
   });
 
   describe("onMessagesDisplaced", () => {

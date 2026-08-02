@@ -24,11 +24,13 @@ export {
   type AgentPlugin,
   type EmitProgress,
   type EnrichResultContext,
+  type MainAgentToolContext,
   type PluginRequirements,
   type RecipeToolSet,
   type ResolveRuntimeContext,
   type ToolFamilyBuilder,
-  type ToolFamilyContext
+  type ToolFamilyContext,
+  type TurnGateContext
 } from "./contract/plugin.js";
 
 export type {
@@ -78,6 +80,7 @@ export type { PluginStore } from "./db/db.js";
 
 export {
   makeWorkspaceHandle,
+  memoryWorkspaceBacking,
   WorkspaceLimitError,
   WORKSPACE_MAX_FILES,
   WORKSPACE_MAX_FILE_BYTES,
