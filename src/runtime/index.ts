@@ -244,8 +244,17 @@ export function createAgentRuntime(
       // evicted before it lands. One plugin's outage would silently cost the
       // others their writes. Each rejection is logged against the key that
       // caused it; an anonymous aggregate is not debuggable across plugins.
+      //
+      // The `async` on the map callback is load-bearing, not style. A listener
+      // is typed `(messages) => Promise<void>`, which does not oblige it to be
+      // `async` — one that reads a binding before starting its async work can
+      // throw *synchronously*, during this very `.map()`. Without the `async`
+      // that throw escapes before `Promise.allSettled` exists to catch it: this
+      // method rejects despite documenting that it never does, and `.map()`
+      // aborts mid-iteration so every listener after the thrower is never even
+      // invoked — strictly worse than the `Promise.all` failure mode above.
       const results = await Promise.allSettled(
-        displacementListeners.map((l) => l.notify(messages))
+        displacementListeners.map(async (l) => l.notify(messages))
       );
       results.forEach((result, i) => {
         if (result.status === "rejected") {

@@ -264,6 +264,44 @@ describe("createAgentRuntime — what it composes", () => {
       errors.mockRestore();
     });
 
+    it("survives a listener that throws synchronously instead of rejecting", async () => {
+      // The contract types a listener `(messages) => Promise<void>`, which does
+      // not oblige it to be `async`. A plugin that touches a binding before
+      // starting its async work — `env.VECTORIZE.upsert(…)` on an undefined
+      // binding — throws during the `.map()` that builds the promise array,
+      // before `Promise.allSettled` exists to catch it.
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      let delivered: string[] = [];
+
+      const rt = createAgentRuntime({
+        plugins: [
+          definePlugin({
+            key: "sync-thrower",
+            // Deliberately not `async`: an async function converts a sync throw
+            // into a rejection for free, so it cannot reproduce this at all.
+            onMessagesDisplaced: () => {
+              throw new Error("VECTORIZE binding undefined");
+            }
+          }),
+          definePlugin({
+            key: "downstream",
+            onMessagesDisplaced: async (messages) => {
+              delivered = messages.map((m) => m.id);
+            }
+          })
+        ]
+      });
+
+      await expect(rt.onMessagesDisplaced(displaced)).resolves.toBeUndefined();
+
+      // The assertion that matters. An aborted `.map()` never invokes the
+      // listeners *after* the thrower — worse than `Promise.all`, which at
+      // least starts them all before rejecting.
+      expect(delivered).toEqual(["m1", "m2"]);
+      expect(errors.mock.calls[0][0]).toContain("sync-thrower");
+      errors.mockRestore();
+    });
+
     it("resolves cleanly when no plugin declares it", async () => {
       const rt = createAgentRuntime({ plugins: [alpha, beta] });
       await expect(rt.onMessagesDisplaced(displaced)).resolves.toBeUndefined();

@@ -182,8 +182,10 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
    *
    * Best-effort in both directions. A throw here never aborts compaction —
    * history must still shorten when a side store is briefly unavailable — and
-   * the runtime fans out with `Promise.allSettled`, so one plugin's rejection
-   * can neither abort another plugin's write nor leave it unawaited.
+   * the runtime fans out with `Promise.allSettled`, so one plugin's failure can
+   * neither abort another plugin's write nor leave it unawaited. Failing
+   * *synchronously* is as safe as rejecting: this need not be an `async`
+   * function, and the runtime handles either.
    */
   onMessagesDisplaced?: (messages: SessionMessage[]) => Promise<void>;
 
