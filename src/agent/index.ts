@@ -34,6 +34,7 @@ export {
   parseRoundAckMessageId,
   parseTurn,
   roundAckMessageId,
+  sessionMessage,
   sessionText,
   taskUserMessageId,
   toModelMessages,

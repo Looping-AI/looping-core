@@ -131,8 +131,15 @@ export interface CreateAgentRuntimeOptions {
    * Verify that every secret and binding the plugins declared is actually
    * present, given the Worker `env`. Off by default because core cannot know
    * which of a consumer's bindings are optional; pass `env` to switch it on.
+   *
+   * Typed `object`, not `Record<string, unknown>`, and that is not looseness.
+   * `Env` is the ambient interface `wrangler types` generates into a consumer's
+   * `worker-configuration.d.ts`; an interface has no index signature, so it does
+   * not satisfy `Record<string, unknown>` and every consumer would have to cast
+   * their own `this.env` to pass it. Requiring a cast to opt into a *check* is
+   * how the check goes unused.
    */
-  env?: Record<string, unknown>;
+  env?: object;
 }
 
 /**
@@ -216,13 +223,14 @@ export function createAgentRuntime(
   ];
 
   if (options.env) {
+    const env = options.env as Record<string, unknown>;
     const missing: string[] = [];
     for (const plugin of plugins) {
       for (const name of [
         ...(plugin.requires?.secrets ?? []),
         ...(plugin.requires?.bindings ?? [])
       ]) {
-        const value = options.env[name];
+        const value = env[name];
         if (value === undefined || value === null || value === "") {
           missing.push(`${name} (required by "${plugin.key}")`);
         }

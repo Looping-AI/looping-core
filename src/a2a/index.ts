@@ -9,6 +9,7 @@
 
 export {
   IDENTITY_CLAIM,
+  TENANT_CLAIM,
   GatewayAuthError,
   bearerToken,
   normalizeGatewayOrigins,

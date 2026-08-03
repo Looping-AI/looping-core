@@ -31,6 +31,14 @@ const JWKS_URL = `${GATEWAY_ORIGIN}/.well-known/jwks.json`;
 const ALLOWED = [GATEWAY_ORIGIN];
 
 /**
+ * What a gateway mints for an agent at the default RPC path: the agent's
+ * **endpoint**, not its origin. Every token here carries it — including the ones
+ * built by hand to test some *other* rejection, so that each of those still
+ * fails for the reason it names rather than tripping the audience check first.
+ */
+const AGENT_AUDIENCE = `${AGENT_ORIGIN}/a2a`;
+
+/**
  * `createRemoteJWKSet` fetches the gateway's public keys over the network. Serve
  * them from a stub so the specs are hermetic — and so `jwksFetches` can prove the
  * allowlist check happens *before* the fetch, not after.
@@ -60,11 +68,11 @@ describe("verifyGatewayToken", () => {
 
     const { payload, identity } = await verifyGatewayToken(token, {
       allowedOrigins: ALLOWED,
-      audience: AGENT_ORIGIN
+      audience: AGENT_AUDIENCE
     });
 
     expect(payload.iss).toBe(GATEWAY_ORIGIN);
-    expect(payload.aud).toBe(AGENT_ORIGIN);
+    expect(payload.aud).toBe(AGENT_AUDIENCE);
     // `key` is the only field anything downstream depends on.
     expect(identity.key).toBe("custom:1:test-agent");
     expect(identity.workspaceId).toBe(1);
@@ -77,14 +85,14 @@ describe("verifyGatewayToken", () => {
       // fall back to a configured default.
       .setProtectedHeader({ alg: "EdDSA", kid: TEST_GATEWAY_PRIVATE_JWK.kid })
       .setIssuer(GATEWAY_ORIGIN)
-      .setAudience(AGENT_ORIGIN)
+      .setAudience(AGENT_AUDIENCE)
       .setExpirationTime("5m")
       .sign(privateKey);
 
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: ALLOWED,
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(/missing jku/i);
   });
@@ -98,7 +106,7 @@ describe("verifyGatewayToken", () => {
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: ["https://not-the-gateway.test"],
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(/not in the allowed gateway origins/i);
 
@@ -114,7 +122,7 @@ describe("verifyGatewayToken", () => {
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: [GATEWAY_ORIGIN, "https://evil.test"],
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(/does not match iss origin/i);
   });
@@ -127,14 +135,14 @@ describe("verifyGatewayToken", () => {
         jku: JWKS_URL
       })
       .setIssuer(GATEWAY_ORIGIN)
-      .setAudience(AGENT_ORIGIN)
+      .setAudience(AGENT_AUDIENCE)
       .setExpirationTime("5m")
       .sign(new Uint8Array(32));
 
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: ALLOWED,
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(GatewayAuthError);
   });
@@ -145,7 +153,7 @@ describe("verifyGatewayToken", () => {
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: ALLOWED,
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(GatewayAuthError);
   });
@@ -158,7 +166,7 @@ describe("verifyGatewayToken", () => {
     await expect(
       verifyGatewayToken(`${header}.${body}.${flipped}`, {
         allowedOrigins: ALLOWED,
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(GatewayAuthError);
   });
@@ -171,7 +179,7 @@ describe("verifyGatewayToken", () => {
     await expect(
       verifyGatewayToken(token, {
         allowedOrigins: ALLOWED,
-        audience: AGENT_ORIGIN
+        audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(GatewayAuthError);
   });
@@ -187,7 +195,7 @@ describe("verifyGatewayToken", () => {
 
     const { identity } = await verifyGatewayToken(token, {
       allowedOrigins: ALLOWED,
-      audience: AGENT_ORIGIN,
+      audience: AGENT_AUDIENCE,
       identityClaim: claim
     });
 
@@ -203,7 +211,7 @@ describe("verifyGatewayToken", () => {
 
     const { identity } = await verifyGatewayToken(token, {
       allowedOrigins: ALLOWED,
-      audience: AGENT_ORIGIN
+      audience: AGENT_AUDIENCE
     });
 
     expect(identity).toEqual({});

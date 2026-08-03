@@ -1,6 +1,6 @@
 {
   "name": "@loopingai/core",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Shared, mandatory foundation for Looping agents on Cloudflare Workers: zero-trust A2A, durable task lifecycle, delegation and subagent runtime, test harness.",
   "keywords": [
     "a2a",
@@ -68,6 +68,10 @@
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
+    },
+    "./testing/fixtures": {
+      "types": "./dist/testing/fixtures.d.ts",
+      "import": "./dist/testing/fixtures.js"
     },
     "./testing/node": {
       "types": "./dist/testing/node.d.ts",

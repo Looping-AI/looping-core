@@ -36,7 +36,21 @@ const ALG = "EdDSA";
  * isn't behind looping-gateway; the default is the Looping namespace so an
  * agent built on this package needs no configuration to interoperate.
  */
-export const IDENTITY_CLAIM = "https://looping.ai/identity";
+export const IDENTITY_CLAIM = "https://loopingai.org/identity";
+
+/**
+ * Default namespaced claim naming the **tenant** the gateway minted this token
+ * for — which of the agents on this origin it authorizes the call to reach.
+ *
+ * Several agents share one endpoint, so they also share an `aud`: the audience
+ * proves the token was minted for *this deployment*, and can say nothing about
+ * which agent on it. This claim is the only thing that can, which is why the
+ * Worker refuses a token that omits it rather than falling back to a default.
+ * Without it `tenant` would be an unauthenticated field in the request body,
+ * and a token legitimately issued for one agent could be replayed against any
+ * of its siblings.
+ */
+export const TENANT_CLAIM = "https://loopingai.org/tenant";
 
 /**
  * The gateway-agent instance identity forwarded by the gateway — i.e. which
@@ -94,6 +108,8 @@ export interface VerifyOptions {
   audience: string;
   /** Claim carrying the caller identity. Defaults to {@link IDENTITY_CLAIM}. */
   identityClaim?: string;
+  /** Claim carrying the authorized tenant. Defaults to {@link TENANT_CLAIM}. */
+  tenantClaim?: string;
 }
 
 /**
@@ -119,18 +135,27 @@ export function normalizeGatewayOrigins(origins: string[]): string[] {
 }
 
 /**
- * Verify a gateway JWT and return its payload + parsed identity.
+ * Verify a gateway JWT and return its payload, parsed identity and authorized
+ * tenant.
  *
  * The `jku` JWK Set URL is read directly from the token's protected header
  * (RFC 7515 §4.1.2) and validated against the allowlist before fetching, so no
  * separate JWKS URL configuration is needed on the remote side.
+ *
+ * `tenant` is returned rather than enforced: this function stays a pure
+ * signature/origin question, and only the caller knows which tenant the request
+ * actually addressed. {@link createA2AWorker} compares the two.
  *
  * Throws {@link GatewayAuthError} on any failure.
  */
 export async function verifyGatewayToken(
   token: string,
   opts: VerifyOptions
-): Promise<{ payload: JWTPayload; identity: GatewayIdentity }> {
+): Promise<{
+  payload: JWTPayload;
+  identity: GatewayIdentity;
+  tenant: string;
+}> {
   try {
     const allowedOrigins = normalizeGatewayOrigins(opts.allowedOrigins);
     // Extract jku from the protected header — this is the standard way the
@@ -166,7 +191,12 @@ export async function verifyGatewayToken(
     });
     const claim = opts.identityClaim ?? IDENTITY_CLAIM;
     const identity = (payload[claim] as GatewayIdentity | undefined) ?? {};
-    return { payload, identity };
+    const tenant = payload[opts.tenantClaim ?? TENANT_CLAIM];
+    return {
+      payload,
+      identity,
+      tenant: typeof tenant === "string" ? tenant : ""
+    };
   } catch (err) {
     if (err instanceof GatewayAuthError) throw err;
     throw new GatewayAuthError((err as Error).message);
