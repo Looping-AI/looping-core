@@ -260,6 +260,25 @@ describe("tenant routing", () => {
     expect(body.error.message).toMatch(/unknown tenant 'ghost'/);
   });
 
+  it.each(["toString", "constructor", "__proto__"])(
+    "refuses the inherited property name '%s' as a tenant",
+    async (name) => {
+      // The tenant id reaches this lookup as a caller-supplied string, so the
+      // registry is read by *own* property. Plain indexing would hand back
+      // something off `Object.prototype` — truthy, and not an agent — which
+      // reaches past the guard and dies reading `.manifest` off it: a 500 in
+      // place of the 400 this names.
+      //
+      // Reachable without a hostile gateway. A tenant id is whatever an agent
+      // was registered under, and `constructor` is a plausible name.
+      const token = await makeGatewayToken({ tenant: name });
+      const res = await call(sendMessage({}, name), token);
+      const body = await res.json<{ error: { message: string } }>();
+
+      expect(body.error.message).toMatch(`unknown tenant '${name}'`);
+    }
+  );
+
   it("refuses a token minted for a sibling tenant", async () => {
     // The replay this design has to stop. The token is entirely valid — right
     // gateway, right signature, right audience, and the audience *cannot*

@@ -309,6 +309,14 @@ export function createA2AWorker<TEnv extends object>(
   if (Object.keys(options.tenants).length === 0) {
     throw new Error("createA2AWorker requires at least one tenant");
   }
+  // The tenant id is caller-controlled, so the lookup is by *own* property.
+  // Plain indexing reaches `Object.prototype`, and every inherited name —
+  // `toString`, `constructor`, `__proto__` — comes back truthy, so a tenant
+  // called one of those slips past an `if (!agent)` guard and only fails later
+  // when a function is read off it. That is a 500 where the whole point of the
+  // guard is a 400 naming the unknown tenant.
+  const tenantAgent = (id: string): TenantAgent | undefined =>
+    Object.hasOwn(options.tenants, id) ? options.tenants[id] : undefined;
   // Only reachable through the first overload, which has already established
   // that `TEnv` carries the two documented names.
   const readSecrets =
@@ -437,7 +445,7 @@ export function createA2AWorker<TEnv extends object>(
         );
       }
 
-      const agent = options.tenants[requestedTenant];
+      const agent = tenantAgent(requestedTenant);
       if (!agent) {
         return jsonRpcErrorResponse(
           body,
@@ -502,7 +510,7 @@ export function createA2AWorker<TEnv extends object>(
         // already authorized and routed on.
         async (ctx) => {
           const requested = ctx.tenant ?? "";
-          const target = options.tenants[requested];
+          const target = tenantAgent(requested);
           if (!target) {
             throw new RequestMalformedError(`unknown tenant '${requested}'`);
           }
