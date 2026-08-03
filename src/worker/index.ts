@@ -73,9 +73,9 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  *
  * Two independent checks keep one tenant's traffic out of another's:
  * `audience` proves the token was minted for this deployment, and
- * {@link TENANT_CLAIM} proves it was minted for *this agent on it*. The second
- * is what makes `tenant` more than an unauthenticated routing hint in the
- * request body.
+ * {@link file://../a2a/verify.ts TENANT_CLAIM} proves it was minted for *this
+ * agent on it*. The second is what makes `tenant` more than an unauthenticated
+ * routing hint in the request body.
  */
 
 /** Default path serving the card-signing public JWKS (the card's `jku`). */
@@ -172,9 +172,9 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    *
    * It proves the token was minted for **this deployment**, and deliberately
    * says nothing about which agent on it — every tenant shares one endpoint and
-   * therefore one audience. {@link TENANT_CLAIM} is what separates them, and is
-   * the check to look at when reasoning about one agent spending another's
-   * token.
+   * therefore one audience. {@link file://../a2a/verify.ts TENANT_CLAIM} is what
+   * separates them, and is the check to look at when reasoning about one agent
+   * spending another's token.
    */
   audience?: string | ((url: URL) => string);
   /**
@@ -306,8 +306,21 @@ export function createA2AWorker<TEnv extends object>(
   const requirePushConfig = options.requirePushConfig ?? true;
   // Nothing can be served without at least one agent, and a deployment that
   // configured none is a startup mistake rather than a per-request one.
-  if (Object.keys(options.tenants).length === 0) {
+  const tenantIds = Object.keys(options.tenants);
+  if (tenantIds.length === 0) {
     throw new Error("createA2AWorker requires at least one tenant");
+  }
+  // …and one registered under `""` is the same mistake wearing a disguise. A
+  // request must name a tenant, and the empty string is how "named none" is
+  // spelled, so that agent is registered and permanently unreachable — every
+  // call to it is refused as a missing tenant before the lookup ever runs. The
+  // check above would otherwise report a deployment with no routable agent as
+  // satisfying "at least one tenant".
+  if (tenantIds.some((id) => !id)) {
+    throw new Error(
+      "createA2AWorker requires every tenant id to be non-empty: a request " +
+        "names its tenant, so an agent registered under '' can never be reached"
+    );
   }
   // The tenant id is caller-controlled, so the lookup is by *own* property.
   // Plain indexing reaches `Object.prototype`, and every inherited name —

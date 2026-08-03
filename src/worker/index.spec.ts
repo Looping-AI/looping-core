@@ -227,6 +227,178 @@ describe("gateway authentication", () => {
 });
 
 /**
+ * What `createA2AWorker` refuses to build at all.
+ *
+ * A registry that cannot serve anybody is a deployment mistake, and the useful
+ * time to say so is at module scope — where it takes the Worker down on the
+ * first request and names the cause — rather than per request, where it reads
+ * to a caller as an ordinary rejection.
+ */
+describe("startup validation", () => {
+  it("refuses an empty registry", () => {
+    expect(() =>
+      createA2AWorker({ manifest: hostManifest, tenants: {} })
+    ).toThrow(/at least one tenant/);
+  });
+
+  it("refuses a tenant registered under the empty id", () => {
+    // `{ "": agent }` passes a bare length check while being unroutable: a
+    // request must name its tenant, and `""` is how "named none" is spelled, so
+    // every call to it is refused as a missing tenant before the registry is
+    // ever consulted. Without this the "at least one tenant" guarantee is about
+    // entries rather than reachable agents.
+    expect(() =>
+      createA2AWorker({
+        manifest: hostManifest,
+        tenants: { "": tenantAgent("nameless") }
+      })
+    ).toThrow(/tenant id to be non-empty/);
+  });
+});
+
+/**
+ * The two options that describe the *deployment* rather than an agent.
+ *
+ * Both are one-shot: a Worker that reads the wrong binding or demands the wrong
+ * audience fails on its first real call, and both failures reach the operator as
+ * a 401 that looks like the gateway's fault. Neither has a cheap runtime signal,
+ * so the coverage has to be here.
+ */
+describe("worker-level configuration", () => {
+  /**
+   * An `env` carrying neither documented name, deliberately. A reader that
+   * silently fell back to the defaults would find `undefined` and throw in
+   * `parsePrivateJwk`, so every assertion below distinguishes "the reader ran"
+   * from "a default happened to work".
+   */
+  interface RenamedEnv {
+    AGENT_KEY: string;
+    ALLOWED_GATEWAYS: string;
+  }
+
+  const renamedEnv: RenamedEnv = {
+    AGENT_KEY: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
+    ALLOWED_GATEWAYS: JSON.stringify([GATEWAY_ORIGIN])
+  };
+
+  const renamed = createA2AWorker<RenamedEnv>({
+    manifest: hostManifest,
+    tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
+    secrets: (e) => ({
+      signingKey: e.AGENT_KEY,
+      gatewayOrigins: e.ALLOWED_GATEWAYS
+    })
+  });
+
+  it("signs with the key the secrets reader selected", async () => {
+    const res = await renamed(
+      new Request(`${AGENT_ORIGIN}${JWKS_PATH}`),
+      renamedEnv
+    );
+    const body = await res.json<{ keys: Record<string, unknown>[] }>();
+
+    expect(res.status).toBe(200);
+    expect(body.keys[0].kid).toBe(TEST_AGENT_PRIVATE_JWK.kid);
+    expect(body.keys[0]).not.toHaveProperty("d");
+  });
+
+  it("verifies against the allowlist the secrets reader selected", async () => {
+    const token = await makeGatewayToken({ identity: { name: "anonymous" } });
+    const res = await renamed(
+      post(sendMessage({}), { authorization: `Bearer ${token}` }),
+      renamedEnv
+    );
+
+    // 400, not 401: the token verified against `ALLOWED_GATEWAYS` and died one
+    // step later on the keyless identity. A 401 would mean the reader never
+    // supplied the allowlist and every caller was refused identically.
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/identity missing key/);
+  });
+
+  it("refuses a gateway outside the selected allowlist", async () => {
+    const token = await makeGatewayToken();
+    const res = await renamed(
+      post(sendMessage({}), { authorization: `Bearer ${token}` }),
+      { ...renamedEnv, ALLOWED_GATEWAYS: JSON.stringify(["https://other.test"]) }
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toMatch(/not in the allowed gateway origins/);
+  });
+
+  /**
+   * The audience override, both branches.
+   *
+   * The audience is a two-sided contract — whatever is required here has to be
+   * exactly what the gateway mints — so the load-bearing assertion is that
+   * setting it *stops* accepting the default. An override that were quietly
+   * ignored would still pass every "accepts the right token" test, because the
+   * default endpoint audience is what the tests mint by default.
+   */
+  const OVERRIDE_AUDIENCE = "https://gateway.test/minted-for-this-deployment";
+
+  const overridden = createA2AWorker({
+    manifest: hostManifest,
+    tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
+    audience: OVERRIDE_AUDIENCE
+  });
+
+  it("rejects the default endpoint audience once an override is set", async () => {
+    const token = await makeGatewayToken(); // the default `${origin}/a2a`
+    const res = await overridden(
+      post(sendMessage({}), { authorization: `Bearer ${token}` }),
+      env
+    );
+
+    expect(res.status).toBe(401);
+  });
+
+  it("accepts a token minted for the overridden audience", async () => {
+    const token = await makeGatewayToken({
+      audience: OVERRIDE_AUDIENCE,
+      identity: { name: "anonymous" }
+    });
+    const res = await overridden(
+      post(sendMessage({}), { authorization: `Bearer ${token}` }),
+      env
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/identity missing key/);
+  });
+
+  it("passes the full request URL to an audience callback", async () => {
+    // The callback form exists for a deployment whose audience depends on where
+    // the request arrived — so what it receives is the whole `URL`, not just the
+    // origin, and it is called per request rather than once at construction.
+    const seen: string[] = [];
+    const byCallback = createA2AWorker({
+      manifest: hostManifest,
+      tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
+      audience: (url) => {
+        seen.push(url.href);
+        return `${url.origin}/from-callback`;
+      }
+    });
+
+    const token = await makeGatewayToken({
+      audience: `${AGENT_ORIGIN}/from-callback`,
+      identity: { name: "anonymous" }
+    });
+    const res = await byCallback(
+      post(sendMessage({}), { authorization: `Bearer ${token}` }),
+      env
+    );
+
+    expect(seen).toEqual([`${AGENT_ORIGIN}/a2a`]);
+    // The returned string is what was actually enforced, not merely computed.
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/identity missing key/);
+  });
+});
+
+/**
  * Several agents on one origin, addressed by `tenant`.
  *
  * They share an endpoint, so they share an `aud` — the audience proves a token

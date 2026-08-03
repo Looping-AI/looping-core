@@ -11,8 +11,14 @@
  * The two secrets are the zero-trust contract and are the only names core
  * insists on; everything else is passed in. Even these are only a *default*:
  * `createA2AWorker`'s `secrets` option reads them from wherever a consumer keeps
- * them, which is what lets several agents share one Worker without sharing one
- * signing identity. See {@link file://./worker/index.ts}.
+ * them, so a Worker whose bindings are already named something else does not
+ * have to rename them.
+ *
+ * That is *all* it does. The secrets are read once per request and belong to the
+ * deployment, not to an agent: several agents share one Worker as tenants of one
+ * origin, and they share this one signing identity with it. What separates them
+ * is the tenant claim on the gateway token, not a key apiece. See
+ * {@link file://./worker/index.ts}.
  */
 
 /** Workers AI, backing the chat loop (and whatever a plugin runs on it). */
