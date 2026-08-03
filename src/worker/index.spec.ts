@@ -486,6 +486,68 @@ describe("tenant routing", () => {
   });
 });
 
+describe("claim-name overrides", () => {
+  // For a deployment fronted by something other than looping-gateway, which
+  // names these claims in its own namespace.
+  const identityClaim = "https://elsewhere.test/identity";
+  const tenantClaim = "https://elsewhere.test/tenant";
+
+  const renamedClaims = createA2AWorker({
+    manifest: hostManifest,
+    tenants: { [TEST_TENANT]: tenantAgent("worker-spec-renamed") },
+    identityClaim,
+    tenantClaim
+  });
+
+  const call = (body: unknown, token: string): Promise<Response> =>
+    renamedClaims(post(body, { authorization: `Bearer ${token}` }), env);
+
+  it("reads both claims from the configured names", async () => {
+    const token = await makeGatewayToken({ identityClaim, tenantClaim });
+    const res = await renamedClaims(
+      post(
+        sendMessage({
+          request: {
+            messageId: "m1",
+            role: "ROLE_USER",
+            parts: [{ text: "hello" }]
+          }
+        }),
+        {
+          authorization: `Bearer ${token}`,
+          "A2A-Version": A2A_PROTOCOL_VERSION
+        }
+      ),
+      env
+    );
+    const body = await res.json<{ error: { message: string } }>();
+
+    // Asserted on the push-config contract rather than anything nearer, because
+    // that check sits past *both* claim reads: getting here means the identity
+    // was found under its configured name (an unread identity has no key, which
+    // 400s first) and the tenant matched under its own. A 401 is the tenant
+    // claim not reaching `verifyGatewayToken` — it falls back to the Looping
+    // name, finds nothing, and refuses a legitimate call as carrying no tenant.
+    expect(res.status).toBe(200);
+    expect(body.error.message).toMatch(/taskPushNotificationConfig/);
+  });
+
+  it("refuses a token naming the tenant under the default claim", async () => {
+    // The override moves the name rather than adding an alternative: this token
+    // carries a perfectly good tenant, just under the Looping name this worker
+    // was configured away from. Accepting it would mean a renamed deployment
+    // still honours whatever the default namespace says.
+    //
+    // The identity claim is minted at the configured name on purpose, so the
+    // keyless-identity 400 cannot mask what this is asserting.
+    const token = await makeGatewayToken({ identityClaim });
+    const res = await call(sendMessage({}, TEST_TENANT), token);
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toMatch(/authorizes tenant '<none>'/);
+  });
+});
+
 describe("GetExtendedAgentCard", () => {
   const getCard = async (tenant: string, tokenTenant = tenant) => {
     const token = await makeGatewayToken({ tenant: tokenTenant });

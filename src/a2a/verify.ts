@@ -36,7 +36,7 @@ const ALG = "EdDSA";
  * isn't behind looping-gateway; the default is the Looping namespace so an
  * agent built on this package needs no configuration to interoperate.
  */
-export const IDENTITY_CLAIM = "https://looping.ai/identity";
+export const IDENTITY_CLAIM = "https://loopingai.org/identity";
 
 /**
  * Default namespaced claim naming the **tenant** the gateway minted this token
@@ -50,7 +50,7 @@ export const IDENTITY_CLAIM = "https://looping.ai/identity";
  * and a token legitimately issued for one agent could be replayed against any
  * of its siblings.
  */
-export const TENANT_CLAIM = "https://looping.ai/tenant";
+export const TENANT_CLAIM = "https://loopingai.org/tenant";
 
 /**
  * The gateway-agent instance identity forwarded by the gateway — i.e. which

@@ -186,6 +186,17 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
   /** Claim carrying the caller identity. Defaults to the Looping namespace. */
   identityClaim?: string;
   /**
+   * Claim carrying the authorized tenant. Defaults to the Looping namespace.
+   *
+   * Both claim names are one side of the same contract as `audience`: whatever
+   * is named here has to be exactly what the calling gateway *mints*. Override
+   * them together, or not at all — a deployment fronted by something other than
+   * looping-gateway that renames only the identity claim keeps reading the
+   * tenant from a key its gateway never sets, and every request 401s on the
+   * empty-tenant comparison below.
+   */
+  tenantClaim?: string;
+  /**
    * Require a `taskPushNotificationConfig` on every `SendMessage`.
    *
    * Defaults to `true`, which is the accept-and-notify contract: the agent
@@ -394,7 +405,8 @@ export function createA2AWorker<TEnv extends object>(
           {
             allowedOrigins: parseGatewayOrigins(secrets.gatewayOrigins),
             audience,
-            identityClaim: options.identityClaim
+            identityClaim: options.identityClaim,
+            tenantClaim: options.tenantClaim
           }
         ));
       } catch (err) {
