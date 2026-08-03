@@ -320,7 +320,10 @@ describe("worker-level configuration", () => {
     const token = await makeGatewayToken();
     const res = await renamed(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
-      { ...renamedEnv, ALLOWED_GATEWAYS: JSON.stringify(["https://other.test"]) }
+      {
+        ...renamedEnv,
+        ALLOWED_GATEWAYS: JSON.stringify(["https://other.test"])
+      }
     );
 
     expect(res.status).toBe(401);
