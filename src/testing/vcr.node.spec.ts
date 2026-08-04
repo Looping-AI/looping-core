@@ -25,11 +25,14 @@ function request(
   init: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Uint8Array;
   } = {}
 ): VcrRequest {
   const headers = init.headers ?? {};
-  const body = new TextEncoder().encode(init.body ?? "");
+  const body =
+    typeof init.body === "object"
+      ? init.body
+      : new TextEncoder().encode(init.body ?? "");
   return {
     url,
     method: init.method ?? "GET",
@@ -188,6 +191,19 @@ describe("playback", () => {
     expect(await res.text()).toBe("ok");
   });
 
+  it("replays a status that must not carry a body", async () => {
+    // `Response` rejects *any* non-null body on 204/205/304 — an empty
+    // Uint8Array throws exactly as a full one does — so a recorded 204 that is
+    // handed its (empty) recorded body cannot be replayed at all.
+    seed([{ statusCode: 204, headers: {}, body: "" }]);
+    const vcr = playback();
+    await control(vcr, `/use?cassette=${CASSETTE}`);
+
+    const res = await vcr.outboundService(request("https://api.test/thing"));
+    expect(res.status).toBe(204);
+    expect(res.body).toBeNull();
+  });
+
   it("blocks an unrecorded request, naming it and the cassette", async () => {
     seed();
     const vcr = playback();
@@ -292,7 +308,11 @@ describe("recording", () => {
     expect(await res.text()).toBe("live body");
   });
 
-  it("writes the cassette on release, and it replays", async () => {
+  it("writes the cassette on release, with no teardown needed", async () => {
+    // Deliberately no `close()`. Releasing is what each test does in its
+    // `afterEach`, so a run that is interrupted afterwards must still keep the
+    // cassettes of every test that finished — leaving them in memory until
+    // global teardown loses all of them.
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("recorded"))
@@ -303,7 +323,6 @@ describe("recording", () => {
       request("https://api.test/thing", { method: "POST", body: "payload" })
     );
     await control(recorder, "/release");
-    await recorder.close();
 
     const replay = playback();
     await control(replay, `/use?cassette=${CASSETTE}`);
@@ -330,6 +349,23 @@ describe("recording", () => {
     expect(url).toBe("https://api.test/thing");
     expect(init.method).toBe("PUT");
     expect(Buffer.from(init.body!).toString()).toBe('{"a":1}');
+  });
+
+  it("sends the request bytes to the live call exactly as received", async () => {
+    // The cassette stores request bodies as utf-8 text, which is what the
+    // format has always held. Re-encoding that string back into bytes on the
+    // way to a *real* endpoint would corrupt any payload that is not valid
+    // utf-8 — 0xff and 0xfe are not, and would arrive as U+FFFD.
+    const binary = new Uint8Array([0xff, 0xfe, 0x00, 0x41]);
+    const spy = liveFetch();
+    vi.stubGlobal("fetch", spy);
+    const vcr = record();
+    await control(vcr, `/use?cassette=${CASSETTE}`);
+    await vcr.outboundService(
+      request("https://api.test/thing", { method: "POST", body: binary })
+    );
+
+    expect(new Uint8Array(spy.mock.calls[0][1].body!)).toEqual(binary);
   });
 
   it("does not forward the headers that the outgoing call must recompute", async () => {

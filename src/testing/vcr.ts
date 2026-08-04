@@ -4,7 +4,8 @@ import {
   Cassette,
   replayable,
   type RecordedRequest,
-  type RecordedResponse
+  type RecordedResponse,
+  type ReplayableResponse
 } from "./vcr-store.js";
 import {
   VCR_CONTROL_ORIGIN,
@@ -144,11 +145,17 @@ function responseHeaderRecord(
   return record;
 }
 
-function toResponse(recorded: RecordedResponse): Response {
-  const { status, headers, body } = replayable(recorded);
-  // 204/304 must not carry a body, and constructing one that does throws.
-  const hasBody = status !== 204 && status !== 304 && status !== 205;
-  return new Response(hasBody ? body : null, { status, headers });
+/**
+ * The one place a `Response` is built, so recording and replaying a given
+ * cassette entry cannot disagree about it.
+ *
+ * `Response` rejects *any* non-null body on 204/205/304 — an empty `Uint8Array`
+ * throws just as a full one does — so a recorded 204 has to be handed back with
+ * a null body or it cannot be replayed at all.
+ */
+function toResponse({ status, headers, body }: ReplayableResponse): Response {
+  const nullBody = status === 204 || status === 205 || status === 304;
+  return new Response(nullBody ? null : body, { status, headers });
 }
 
 function json(status: number, value: unknown): Response {
@@ -205,15 +212,11 @@ class Recorder {
       );
     }
 
-    if (this.#record) return this.#recordOne(request, body);
+    if (this.#record) return this.#recordOne(request, bytes);
 
     const hit = this.#active.match(request.method, request.url, body);
-    if (hit) {
-      return new Response(hit.body, {
-        status: hit.status,
-        headers: hit.headers
-      });
-    }
+    if (hit) return toResponse(hit);
+
     this.#misses.push(what);
     return this.#blocked(
       `VCR has no recording of ${what} in ${path.basename(this.#active.file)}. ` +
@@ -240,6 +243,10 @@ class Recorder {
   #control(url: URL): Response {
     if (url.pathname === "/release") {
       const misses = this.#misses;
+      // Write here rather than only at teardown, so a run that is interrupted
+      // still keeps every cassette whose test finished. A no-op in playback:
+      // `flush()` returns immediately unless something was recorded.
+      this.#active?.flush();
       this.#active = null;
       this.#activeName = null;
       this.#misses = [];
@@ -300,14 +307,24 @@ class Recorder {
     });
   }
 
-  async #recordOne(request: VcrRequest, body: string): Promise<Response> {
-    const live = await this.#live(request, Buffer.from(body, "utf8"));
+  /**
+   * `requestBytes` is forwarded to the live endpoint **as received**. The
+   * cassette stores the utf-8 text of it, which is what the format has always
+   * held and what keys the entry — but a payload that is not valid utf-8 must
+   * not be re-encoded on its way to a real API, so the two are kept separate
+   * rather than the string being round-tripped back into bytes.
+   */
+  async #recordOne(
+    request: VcrRequest,
+    requestBytes: Buffer
+  ): Promise<Response> {
+    const live = await this.#live(request, requestBytes);
     const bytes = Buffer.from(await live.arrayBuffer());
     const recordedRequest: RecordedRequest = {
       method: request.method,
       url: request.url,
       headers: headerRecord(request.headers),
-      body
+      body: requestBytes.toString("utf8")
     };
     const recordedResponse: RecordedResponse = {
       statusCode: live.status,
@@ -317,7 +334,7 @@ class Recorder {
     this.#active!.record(recordedRequest, recordedResponse);
     // Serve the response through the same path a replay takes, so a recording
     // run and the replay of what it just wrote cannot disagree.
-    return toResponse(recordedResponse);
+    return toResponse(replayable(recordedResponse));
   }
 
   async close(): Promise<void> {
