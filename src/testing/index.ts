@@ -7,10 +7,10 @@
  * does not exist in a deployed Worker.
  *
  * **This barrel is the workerd half** — safe to import from a spec. The VCR
- * recorder needs `undici` and `node:fs`, so it lives behind
- * `@loopingai/core/testing/node` and must not be re-exported here: pulling it into
- * this graph would drag Node builtins into every spec that wanted a fixture.
- * `vcr-shared.ts` is the seam both realms may load.
+ * recorder needs `node:fs`, so it lives behind `@loopingai/core/testing/node`
+ * and must not be re-exported here: pulling it into this graph would drag Node
+ * builtins into every spec that wanted a fixture. `vcr-shared.ts` is the seam
+ * both realms may load.
  *
  * Three things live here:
  *
@@ -22,8 +22,17 @@
  *   path can be exercised end to end without a real gateway.
  */
 
-export { setupRecording, cassetteNameFor } from "./vcr-spec.js";
-export { VCR_CONTROL_ORIGIN, CASSETTE_NAME_RE } from "./vcr-shared.js";
+export {
+  setupRecording,
+  cassetteNameFor,
+  type SetupRecordingOptions
+} from "./vcr-spec.js";
+export {
+  VCR_CONTROL_ORIGIN,
+  VCR_MARKER_HEADER,
+  CASSETTE_NAME_RE,
+  type VcrReleaseResult
+} from "./vcr-shared.js";
 
 export { FakeSession } from "./fake-session.js";
 export { mockModel, finalReply, type MockStep } from "./mock-model.js";

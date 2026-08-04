@@ -1,6 +1,10 @@
 import { beforeEach, afterEach } from "vitest";
 import type { RunnerTestCase, RunnerTestSuite } from "vitest";
-import { VCR_CONTROL_ORIGIN } from "./vcr-shared.js";
+import {
+  VCR_CONTROL_ORIGIN,
+  VCR_MARKER_HEADER,
+  type VcrReleaseResult
+} from "./vcr-shared.js";
 
 /**
  * Worker-side half of the VCR harness. `setupRecording()` is the *only* thing a
@@ -8,10 +12,10 @@ import { VCR_CONTROL_ORIGIN } from "./vcr-shared.js";
  * own cassette, auto-named from the file + describe + test names, recorded under
  * `RECORD=1` and replayed otherwise. No per-recipe config, no registry.
  *
- * How it reaches the Node-side agent: specs run in workerd (no filesystem), so
- * the active cassette is announced over an in-band control channel — a `fetch`
- * to {@link VCR_CONTROL_ORIGIN} that `VcrAgent` (test/helpers/vcr.ts) answers
- * from the same Miniflare `fetchMock` every worker fetch already flows through.
+ * How it reaches the Node-side recorder: specs run in workerd (no filesystem),
+ * so the active cassette is announced over an in-band control channel — a
+ * `fetch` to {@link VCR_CONTROL_ORIGIN} that `createVcr` (vcr.ts) answers from
+ * the same Miniflare `outboundService` every worker fetch already flows through.
  */
 
 const kebab = (s: string): string =>
@@ -69,18 +73,47 @@ export function cassetteNameFor(task: RunnerTestCase): string {
   return [rel, ...suites, task.name].map(kebab).join("--") + ".snapshot.json";
 }
 
+export interface SetupRecordingOptions {
+  /**
+   * Let a test finish even though the recorder could not serve one of its
+   * requests. Only for a spec that deliberately exercises a failing `fetch`;
+   * the default is to fail, because a silent miss reads as a broken assertion
+   * several frames from its cause.
+   */
+  allowMisses?: boolean;
+}
+
+/**
+ * The recorder answers every control request with {@link VCR_MARKER_HEADER}, so
+ * its absence — or a `fetch` that rejects outright, which is what a request to
+ * a host that does not resolve does — means nothing is intercepting outbound
+ * traffic at all.
+ */
+const NOT_INSTALLED =
+  `The VCR recorder is not installed, so ${VCR_CONTROL_ORIGIN} went to the ` +
+  `real network. Wire it into your vitest config:\n\n` +
+  `  const vcr = createVcr({ snapshotsDir, record: recordFromEnv() });\n` +
+  `  cloudflareTest({ miniflare: { outboundService: vcr.outboundService } })\n\n` +
+  `(\`fetchMock\` is not it: pool 0.20 removed the option, and an unknown key ` +
+  `in \`miniflare\` is ignored rather than rejected.)`;
+
 /**
  * Call once at the top of a recorded spec file (outside any `describe`). Adds
  * per-test hooks that activate the test's cassette before it runs and release
  * it after. A missing cassette **fails** the test with instructions to record
  * (never skips — CI must go red so the gap is visible).
  */
-export function setupRecording(): void {
+export function setupRecording(options: SetupRecordingOptions = {}): void {
   beforeEach(async (ctx) => {
     const cassette = cassetteNameFor(ctx.task);
     const res = await fetch(`${VCR_CONTROL_ORIGIN}/use?cassette=${cassette}`, {
       method: "POST"
+    }).catch(() => {
+      throw new Error(NOT_INSTALLED);
     });
+    if (res.headers.get(VCR_MARKER_HEADER) === null) {
+      throw new Error(NOT_INSTALLED);
+    }
     if (res.status === 404) {
       throw new Error(
         `No VCR cassette "${cassette}". Record it with \`RECORD=1\` ` +
@@ -91,7 +124,7 @@ export function setupRecording(): void {
     if (res.status === 409) {
       throw new Error(
         `VCR cassette "${cassette}" could not activate: another recorded test is ` +
-          `already using the shared agent. Recorded specs must not run in ` +
+          `already using the shared recorder. Recorded specs must not run in ` +
           `parallel — keep them sequential.`
       );
     }
@@ -103,6 +136,21 @@ export function setupRecording(): void {
   });
 
   afterEach(async () => {
-    await fetch(`${VCR_CONTROL_ORIGIN}/release`, { method: "POST" });
+    const res = await fetch(`${VCR_CONTROL_ORIGIN}/release`, {
+      method: "POST"
+    });
+    if (options.allowMisses === true || !res.ok) return;
+    const { misses } = (await res.json()) as VcrReleaseResult;
+    if (misses.length === 0) return;
+    // A miss cannot reject the Worker's own `fetch()` — Miniflare turns anything
+    // an outbound service throws into a 500 — so the request under test sees a
+    // 500 body and fails somewhere downstream, if at all. Reporting it here is
+    // what makes the *cause* the failure.
+    throw new Error(
+      `VCR could not serve ${misses.length} request(s) in this test:\n` +
+        misses.map((m) => `  • ${m}`).join("\n") +
+        `\nRe-record with \`RECORD=1\`, or pass ` +
+        `\`setupRecording({ allowMisses: true })\` if the failure is the point.`
+    );
   });
 }

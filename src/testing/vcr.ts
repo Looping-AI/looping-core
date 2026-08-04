@@ -1,242 +1,402 @@
-import { MockAgent, SnapshotAgent, type Dispatcher } from "undici";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { VCR_CONTROL_ORIGIN, CASSETTE_NAME_RE } from "./vcr-shared.js";
+import {
+  Cassette,
+  replayable,
+  type RecordedRequest,
+  type RecordedResponse,
+  type ReplayableResponse
+} from "./vcr-store.js";
+import {
+  VCR_CONTROL_ORIGIN,
+  VCR_MARKER_HEADER,
+  CASSETTE_NAME_RE
+} from "./vcr-shared.js";
 
 /**
- * undici stamps every cassette entry with two volatile fields we never want
- * committed: `callCount` — which its recorder *mutates on every replay* (to walk
- * sequential responses) — and `timestamp`, the record-time clock. Neither is
- * needed for playback (`callCount` defaults to 0 on load; `timestamp` is unused),
- * so we delete them from a freshly recorded cassette. Removing them is also what
- * stops a plain `npm test` from dirtying cassettes: with no persisted `callCount`
- * there is nothing for a replay to bump — and {@link VcrAgent.close} no longer
- * writes in playback anyway.
+ * The **Node realm** half of the VCR harness: a Miniflare `outboundService`.
+ *
+ * ## Why `outboundService` and not `fetchMock`
+ *
+ * Miniflare 4 implemented `fetchMock` as one line of sugar over this same hook —
+ * `outboundService = (req) => fetch(req, { dispatcher: fetchMock })` — and
+ * Miniflare 5 dropped `fetchMock` entirely, keeping only `outboundService`.
+ * `@cloudflare/vitest-pool-workers` 0.20 removed it from its override options to
+ * match, saying so in as many words: *"`fetchMock`: you should use
+ * `outboundService` instead"*. Targeting the hook rather than the sugar is what
+ * lets one harness serve pool 0.18 through 0.20+.
+ *
+ * It also drops two constraints that had nothing to do with recording:
+ *
+ *  - **No `undici` peer.** `fetchMock` was validated with
+ *    `z.instanceof(MockAgent)` against *Miniflare's own* undici, so a second copy
+ *    in `node_modules` failed with `Input not instance of MockAgent` and the peer
+ *    range had to track Miniflare's exact pin. `outboundService` has no
+ *    `instanceof` check in either direction — a foreign `Response` is re-wrapped.
+ *  - **No silent no-op.** An unknown key in the `miniflare` options is ignored,
+ *    which is how a harness wired to `fetchMock` on pool 0.20 failed: every
+ *    request escaped to the real network and died as `internal error;
+ *    reference = …`, naming nothing. `setupRecording()` now proves the recorder
+ *    answered before a test runs — see {@link VCR_MARKER_HEADER}.
+ *
+ * ## How a request is routed
+ *
+ * Every outbound `fetch()` from workerd arrives here as a standard `Request`,
+ * with the true target URL already restored by Miniflare, and is dispatched on
+ * host alone:
+ *
+ *  - **The control channel** ({@link VCR_CONTROL_ORIGIN}) — specs run in workerd
+ *    and have no filesystem, so an in-band `fetch` is the only way to say which
+ *    cassette the current test is using. See `setupRecording` (vcr-spec.ts).
+ *  - **A {@link VcrOptions.handlers} host** — a consumer-supplied stub, for
+ *    things that are fixtures rather than recordings (a gateway JWKS).
+ *  - **An {@link VcrOptions.allowNetworkHosts} host** — the real network, always.
+ *  - **Anything else, cassette active** — recorded or replayed against it.
+ *  - **Anything else, no cassette** — blocked. A test that was never wired for
+ *    recording cannot reach the network by accident.
  */
-function stripVolatileFields(file: string): void {
-  const entries = JSON.parse(readFileSync(file, "utf8")) as {
-    snapshot: { callCount?: number; timestamp?: string };
-  }[];
-  for (const { snapshot } of entries) {
-    delete snapshot.callCount;
-    delete snapshot.timestamp;
-  }
-  writeFileSync(file, JSON.stringify(entries, null, 2));
+
+/** Minimal shape of the `Request` Miniflare hands an outbound service. */
+export interface VcrRequestHeaders {
+  forEach(callback: (value: string, name: string) => void): void;
+  get(name: string): string | null;
 }
 
-function originHost(origin: string | URL | undefined): string | null {
-  if (!origin) return null;
-  try {
-    return new URL(String(origin)).host;
-  } catch {
-    return null;
-  }
+/** Minimal shape of the `Request` Miniflare hands an outbound service. */
+export interface VcrRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: VcrRequestHeaders;
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-export interface CreateVcrAgentOptions {
-  /** Absolute path of the cassettes directory (test/snapshots/). */
+/**
+ * Structural on purpose: core does not depend on `miniflare`, and this type
+ * assigns to `WorkerOptions["outboundService"]` under both Miniflare 4 and 5.
+ */
+export type VcrOutboundService = (request: VcrRequest) => Promise<Response>;
+
+export interface VcrOptions {
+  /** Absolute path of the cassettes directory. */
   snapshotsDir: string;
   /**
-   * true → every activated cassette records real traffic, unconditionally
-   * overwriting whatever was there (undici's `"record"` mode never loads or
-   * matches existing entries, unlike `"update"` — see {@link VcrAgent.agentFor}).
-   * false → replay.
+   * true → every activated cassette captures live traffic, replacing whatever
+   * was there. Recording never loads the existing file first, so a recording run
+   * always reflects the live API rather than half of a stale one.
+   * false → replay, and no request ever leaves the machine.
    */
   record: boolean;
-  /** Hosts served by ordinary MockAgent interceptors, never VCR'd (the gateway JWKS). */
-  passthroughHosts: string[];
-  /** Request headers never written to a cassette (secrets: API keys, auth). */
+  /** Hosts answered by a stub instead of a cassette (e.g. a gateway JWKS). */
+  handlers?: Record<
+    string,
+    (request: VcrRequest) => Response | Promise<Response>
+  >;
+  /** Hosts that always reach the real network, recorded or not. */
+  allowNetworkHosts?: string[];
+  /** Request *and* response headers never written to a cassette (API keys, auth). */
   excludeHeaders?: string[];
-  /** Headers stored but excluded from request matching (e.g. session cookies). */
-  ignoreHeaders?: string[];
+}
+
+export interface Vcr {
+  /** Hand this to `cloudflareTest({ miniflare: { outboundService } })`. */
+  readonly outboundService: VcrOutboundService;
+  /** Flush every cassette. Safe to call more than once. */
+  close(): Promise<void>;
 }
 
 const CONTROL_HOST = new URL(VCR_CONTROL_ORIGIN).host;
 
 /**
- * The single agent Miniflare accepts as `fetchMock` (it allows only one), fanning
- * outbound worker requests out by role:
- *
- *  - **Control channel** ({@link VCR_CONTROL_ORIGIN}) → ordinary MockAgent
- *    interceptors whose reply callbacks flip the *active cassette*. This is how a
- *    spec running in workerd (no filesystem) tells this Node-side agent which
- *    test is running — see `setupRecording` (vcr-spec.ts).
- *  - **Passthrough hosts** (the gateway JWKS) → ordinary MockAgent interceptors,
- *    unchanged from before VCR existed.
- *  - **Everything else, while a cassette is active** → that cassette's undici
- *    {@link SnapshotAgent} record/replay. In playback a request with no matching
- *    recording throws `No snapshot found` — offline, never the network.
- *  - **Everything else, with no active cassette** → ordinary MockAgent behavior
- *    (`disableNetConnect()` → offline error). A non-recorded test never reaches
- *    the network.
- *
- * There is **no registry**: cassettes are keyed per test (file + describe + test
- * name) by the spec helper, activated one at a time over the control channel. A
- * new recorded spec touches only its own `.spec` file.
- *
- * Why `VcrAgent extends MockAgent` rather than `SnapshotAgent`: a `SnapshotAgent`'s
- * `dispatch` fully overrides `MockAgent`'s (it never falls back to the interceptor
- * path), so one `SnapshotAgent` cannot also serve the control/interceptor fixtures
- * — and cannot serve more than one cassette. Keeping one internal `SnapshotAgent`
- * per cassette and dispatching to the active one, with an ordinary
- * `MockAgent.dispatch` fallback for control/passthrough/offline, leaves the
- * interceptor path exactly as it always worked. Miniflare validates `fetchMock`
- * with `instanceof MockAgent`, which `VcrAgent` satisfies directly.
+ * Request headers dropped before a live call. `host` and `content-length` are
+ * recomputed by the outgoing fetch and a stale value corrupts it;
+ * `accept-encoding` is dropped so the body arrives as plaintext to store; the
+ * rest are hop-by-hop or Miniflare's own loopback bookkeeping.
  */
-export class VcrAgent extends MockAgent {
+const SKIP_REQUEST_HEADERS = new Set([
+  "accept-encoding",
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
+
+function headerRecord(headers: VcrRequestHeaders): Record<string, string> {
+  const record: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    record[name.toLowerCase()] = value;
+  });
+  return record;
+}
+
+/** `set-cookie` is the one header `forEach` folds together destructively. */
+function responseHeaderRecord(
+  headers: Headers
+): Record<string, string | string[]> {
+  const record: Record<string, string | string[]> = {};
+  headers.forEach((value, name) => {
+    record[name.toLowerCase()] = value;
+  });
+  const cookies = headers.getSetCookie?.() ?? [];
+  if (cookies.length > 0) record["set-cookie"] = cookies;
+  return record;
+}
+
+/**
+ * The one place a `Response` is built, so recording and replaying a given
+ * cassette entry cannot disagree about it.
+ *
+ * `Response` rejects *any* non-null body on 204/205/304 — an empty `Uint8Array`
+ * throws just as a full one does — so a recorded 204 has to be handed back with
+ * a null body or it cannot be replayed at all.
+ */
+function toResponse({ status, headers, body }: ReplayableResponse): Response {
+  const nullBody = status === 204 || status === 205 || status === 304;
+  return new Response(nullBody ? null : body, { status, headers });
+}
+
+function json(status: number, value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      [VCR_MARKER_HEADER]: "1"
+    }
+  });
+}
+
+class Recorder {
   readonly #snapshotsDir: string;
   readonly #record: boolean;
-  readonly #passthrough: Set<string>;
-  readonly #excludeHeaders?: string[];
-  readonly #ignoreHeaders?: string[];
-  /** One SnapshotAgent per cassette name, created lazily on first activation. */
-  readonly #agents = new Map<string, SnapshotAgent>();
-  #active: SnapshotAgent | null = null;
+  readonly #handlers: NonNullable<VcrOptions["handlers"]>;
+  readonly #allowNetwork: Set<string>;
+  readonly #excludeHeaders: string[];
+  /** One cassette per name, created on first activation. */
+  readonly #cassettes = new Map<string, Cassette>();
+  #active: Cassette | null = null;
   #activeName: string | null = null;
+  /** Requests that could not be served since the active cassette was set. */
+  #misses: string[] = [];
 
-  constructor(options: CreateVcrAgentOptions) {
-    super();
+  constructor(options: VcrOptions) {
     this.#snapshotsDir = options.snapshotsDir;
     this.#record = options.record;
-    this.#passthrough = new Set(options.passthroughHosts);
-    this.#excludeHeaders = options.excludeHeaders;
-    this.#ignoreHeaders = options.ignoreHeaders;
-    this.#registerControl();
+    this.#handlers = options.handlers ?? {};
+    this.#allowNetwork = new Set(options.allowNetworkHosts ?? []);
+    this.#excludeHeaders = options.excludeHeaders ?? [];
   }
 
-  /** Persistent interceptors backing the control channel (see class doc). */
-  #registerControl(): void {
-    const control = this.get(VCR_CONTROL_ORIGIN);
-    control
-      // RegExp path so any `?cassette=…` query matches; the name is read from
-      // opts.path (the body is a ReadableStream and can't be read synchronously).
-      .intercept({ path: /^\/use(\?|$)/, method: "POST" })
-      .reply((opts) => this.#onUse(opts))
-      .persist();
-    control
-      .intercept({ path: "/release", method: "POST" })
-      .reply(() => {
-        this.#active = null;
-        this.#activeName = null;
-        return { statusCode: 204 };
-      })
-      .persist();
-  }
+  handle = async (request: VcrRequest): Promise<Response> => {
+    const url = new URL(request.url);
+    if (url.host === CONTROL_HOST) return this.#control(url);
 
-  /** Activate the named cassette (get-or-create its SnapshotAgent). `opts.path`
-   *  is undici's reply-callback request path, e.g. `/use?cassette=<name>`. */
-  #onUse(opts: { path: string }): { statusCode: number; data?: string } {
-    const name =
-      new URL(opts.path, VCR_CONTROL_ORIGIN).searchParams.get("cassette") ?? "";
-    if (!CASSETTE_NAME_RE.test(name)) {
-      return { statusCode: 400, data: `invalid cassette name: ${name}` };
+    const handler = this.#handlers[url.host];
+    if (handler) return handler(request);
+
+    // Read once: the body is needed to key the cassette *and* to forward.
+    const bytes = Buffer.from(await request.arrayBuffer());
+    if (this.#allowNetwork.has(url.host)) return this.#live(request, bytes);
+
+    const body = bytes.toString("utf8");
+    const what = `${request.method} ${request.url}`;
+
+    if (this.#active === null) {
+      this.#misses.push(what);
+      return this.#blocked(
+        `VCR blocked ${what}: no cassette is active for this test. ` +
+          `Call setupRecording() at the top of the spec, or add the host to ` +
+          `allowNetworkHosts / handlers.`
+      );
     }
-    // Cheap tripwire: recorded specs are expected to run sequentially, so a
-    // second cassette activating while another is held means parallel recorded
-    // tests are sharing this agent — surface it loudly rather than mis-record.
+
+    if (this.#record) return this.#recordOne(request, bytes);
+
+    const hit = this.#active.match(request.method, request.url, body);
+    if (hit) return toResponse(hit);
+
+    this.#misses.push(what);
+    return this.#blocked(
+      `VCR has no recording of ${what} in ${path.basename(this.#active.file)}. ` +
+        `Re-record with RECORD=1. The cassette holds: ` +
+        `${this.#active.recorded.join(", ") || "(nothing)"}.`
+    );
+  };
+
+  /**
+   * A miss cannot be made to *reject* the Worker's `fetch()` — Miniflare catches
+   * whatever an outbound service throws and turns it into a 500 anyway. So the
+   * message goes in the body where it can be read, and the miss is also reported
+   * on `/release` so the test itself fails with it. That is the half the old
+   * harness lacked: `disableNetConnect()` rejected, and the rejection surfaced
+   * as `internal error; reference = …` naming nothing.
+   */
+  #blocked(message: string): Response {
+    return new Response(message, {
+      status: 500,
+      headers: { [VCR_MARKER_HEADER]: "1" }
+    });
+  }
+
+  #control(url: URL): Response {
+    if (url.pathname === "/release") {
+      const misses = this.#misses;
+      // Write here rather than only at teardown, so a run that is interrupted
+      // still keeps every cassette whose test finished. A no-op in playback:
+      // `flush()` returns immediately unless something was recorded.
+      this.#active?.flush();
+      this.#active = null;
+      this.#activeName = null;
+      this.#misses = [];
+      return json(200, { misses });
+    }
+    if (url.pathname !== "/use") return json(404, { error: "unknown" });
+
+    const name = url.searchParams.get("cassette") ?? "";
+    if (!CASSETTE_NAME_RE.test(name)) {
+      return json(400, { error: `invalid cassette name: ${name}` });
+    }
+    // Recorded specs are expected to run sequentially: a second cassette
+    // activating while one is held means two of them are sharing this recorder,
+    // which mis-records rather than failing, so say so instead.
     if (this.#activeName !== null && this.#activeName !== name) {
-      return {
-        statusCode: 409,
-        data: `cassette ${this.#activeName} still active`
-      };
+      return json(409, { error: `cassette ${this.#activeName} still active` });
     }
     const file = path.join(this.#snapshotsDir, name);
-    // Playback with no cassette → 404, which the spec turns into a "record it"
-    // error. In record mode the file is created on first write.
+    // Playback with no cassette on disk → 404, which the spec turns into a
+    // "record it" failure. Recording creates the file on first write.
     if (!this.#record && !existsSync(file)) {
-      return { statusCode: 404, data: `no cassette ${name}` };
+      return json(404, { error: `no cassette ${name}` });
     }
-    this.#active = this.#agentFor(name, file);
+    this.#active = this.#cassetteFor(name, file);
     this.#activeName = name;
-    return { statusCode: 204 };
+    this.#misses = [];
+    return json(200, { cassette: name });
   }
 
-  #agentFor(name: string, file: string): SnapshotAgent {
-    let agent = this.#agents.get(name);
-    if (!agent) {
-      agent = new SnapshotAgent({
-        // `"record"`, not undici's `"update"`: update mode replays any request
-        // already in the cassette and only hits the network for new ones —
-        // silently stale the moment recorded traffic no longer matches live
-        // behavior (e.g. a re-used game id). `"record"` never loads or matches
-        // existing entries, so a recording run always reflects the live API.
-        mode: this.#record ? "record" : "playback",
-        snapshotPath: file,
-        excludeHeaders: this.#excludeHeaders,
-        ignoreHeaders: this.#ignoreHeaders,
-        autoFlush: this.#record
-      });
-      this.#agents.set(name, agent);
+  #cassetteFor(name: string, file: string): Cassette {
+    let cassette = this.#cassettes.get(name);
+    if (!cassette) {
+      cassette = new Cassette(file, { excludeHeaders: this.#excludeHeaders });
+      // Recording deliberately starts from nothing rather than topping up an
+      // existing file: a cassette that mixes today's traffic with last month's
+      // is stale in a way no assertion can see.
+      if (!this.#record) cassette.load();
+      this.#cassettes.set(name, cassette);
     }
-    return agent;
+    return cassette;
   }
 
-  dispatch(
-    opts: Dispatcher.DispatchOptions,
-    handler: Dispatcher.DispatchHandler
-  ): boolean {
-    const host = originHost(opts.origin);
-    const vcr =
-      host !== null &&
-      host !== CONTROL_HOST &&
-      !this.#passthrough.has(host) &&
-      this.#active !== null;
-    if (vcr) return this.#active!.dispatch(opts, handler) as boolean;
-    return super.dispatch(opts, handler);
+  /** The real call, with the headers the Worker sent minus the unforwardable. */
+  #live(request: VcrRequest, body: Buffer): Promise<Response> {
+    const headers: [string, string][] = [];
+    request.headers.forEach((value, name) => {
+      if (!SKIP_REQUEST_HEADERS.has(name.toLowerCase())) {
+        headers.push([name, value]);
+      }
+    });
+    return fetch(request.url, {
+      method: request.method,
+      headers,
+      body: body.byteLength > 0 ? body : undefined,
+      // Matches what Miniflare's own `fetch(req, { dispatcher })` sugar did, so
+      // a recording captures the same final response the Worker used to see.
+      redirect: "follow"
+    });
   }
 
   /**
-   * Closes every cassette's `SnapshotAgent`, then this agent.
-   *
-   * Record mode: `SnapshotAgent.close()` saves each cassette, stops its
-   * recorder's auto-flush timer, and closes its real sockets — all required (see
-   * {@link closeVcr}). We then {@link stripVolatileFields} from each saved file
-   * so the committed cassette carries no `callCount`/`timestamp`.
-   *
-   * Playback mode: undici's `SnapshotAgent.close()` *unconditionally* re-saves
-   * the cassette, writing back the `callCount` its recorder mutates on every
-   * replay — the side effect that dirtied cassettes on a plain `npm test`. There
-   * is nothing to save and no real socket in playback, so we skip that save
-   * entirely and only stop each recorder's timers.
+   * `requestBytes` is forwarded to the live endpoint **as received**. The
+   * cassette stores the utf-8 text of it, which is what the format has always
+   * held and what keys the entry — but a payload that is not valid utf-8 must
+   * not be re-encoded on its way to a real API, so the two are kept separate
+   * rather than the string being round-tripped back into bytes.
    */
+  async #recordOne(
+    request: VcrRequest,
+    requestBytes: Buffer
+  ): Promise<Response> {
+    const live = await this.#live(request, requestBytes);
+    const bytes = Buffer.from(await live.arrayBuffer());
+    const recordedRequest: RecordedRequest = {
+      method: request.method,
+      url: request.url,
+      headers: headerRecord(request.headers),
+      body: requestBytes.toString("utf8")
+    };
+    const recordedResponse: RecordedResponse = {
+      statusCode: live.status,
+      headers: responseHeaderRecord(live.headers),
+      body: bytes.toString("base64")
+    };
+    this.#active!.record(recordedRequest, recordedResponse);
+    // Serve the response through the same path a replay takes, so a recording
+    // run and the replay of what it just wrote cannot disagree.
+    return toResponse(replayable(recordedResponse));
+  }
+
   async close(): Promise<void> {
-    if (this.#record) {
-      await Promise.all([...this.#agents.values()].map((a) => a.close()));
-      for (const name of this.#agents.keys()) {
-        stripVolatileFields(path.join(this.#snapshotsDir, name));
-      }
-    } else {
-      for (const a of this.#agents.values()) a.getRecorder().destroy();
-    }
-    await super.close();
+    for (const cassette of this.#cassettes.values()) cassette.flush();
   }
 }
 
-export function createVcrAgent(options: CreateVcrAgentOptions): VcrAgent {
-  const agent = new VcrAgent(options);
-  (globalThis as Record<string, unknown>)[VCR_KEY] = agent;
-  return agent;
+/**
+ * Build the recorder and register it for {@link closeVcr}.
+ *
+ * ```ts
+ * // vitest.config.ts
+ * const vcr = createVcr({
+ *   snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
+ *   record: recordFromEnv(),
+ *   excludeHeaders: ["x-api-key", "authorization", "cookie", "set-cookie"]
+ * });
+ *
+ * export default defineConfig({
+ *   plugins: [cloudflareTest({ miniflare: { outboundService: vcr.outboundService } })],
+ *   test: { globalSetup: ["@loopingai/core/testing/vcr-global-setup"] }
+ * });
+ * ```
+ */
+export function createVcr(options: VcrOptions): Vcr {
+  const recorder = new Recorder(options);
+  const vcr: Vcr = {
+    outboundService: recorder.handle,
+    close: () => recorder.close()
+  };
+  (globalThis as Record<string, unknown>)[VCR_KEY] = vcr;
+  return vcr;
 }
 
-/** globalThis slot so the Vitest globalSetup teardown can reach the live agent
+/**
+ * Whether this run records, from `RECORD`.
+ *
+ * Compared against `"1"` rather than tested for truthiness, because every
+ * non-empty string is truthy: `RECORD=0` and `RECORD=false` — the two things
+ * someone reaches for to turn recording *off* — would otherwise turn it on and
+ * overwrite committed cassettes with live traffic. The opposite mistake
+ * (`RECORD=true` not recording) fails loudly on the next assertion and costs
+ * nothing.
+ */
+export function recordFromEnv(): boolean {
+  return process.env.RECORD === "1";
+}
+
+/** globalThis slot so the Vitest globalSetup teardown can reach the recorder
  *  created during config evaluation (same process, possibly a different module
  *  realm — globalThis is the reliable channel). */
 const VCR_KEY = "__VCR_AGENT__";
 
 /**
- * Flush and close the active VCR agent (all its cassettes). In record mode,
- * undici's recorder arms a self-refreshing, non-`unref`ed auto-flush timer and
- * the real `SnapshotAgent` keeps sockets open — both keep the process alive
- * after tests finish and trip Vitest's "close timed out" at teardown. Calling
- * this (from a Vitest `globalSetup` teardown, which runs before Vite closes its
- * own server) stops them. A no-op if no agent was created, and in playback only
- * stops recorder timers — {@link VcrAgent.close} deliberately does not re-save
- * the cassette there (see its doc).
+ * Flush every cassette. Cassettes are already written when each one is
+ * released, so this is a safety net for a run that ended without releasing —
+ * and a no-op if no recorder was created.
  */
 export async function closeVcr(): Promise<void> {
   const g = globalThis as Record<string, unknown>;
-  const agent = g[VCR_KEY] as VcrAgent | undefined;
-  if (!agent) return;
+  const vcr = g[VCR_KEY] as Vcr | undefined;
+  if (!vcr) return;
   g[VCR_KEY] = undefined;
-  await agent.close();
+  await vcr.close();
 }

@@ -1,0 +1,21 @@
+[
+  {
+    "snapshot": {
+      "request": {
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "url": "https://api.example/greeting"
+      },
+      "responses": [
+        {
+          "statusCode": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body": "eyJoZWxsbyI6IndvcmxkIn0="
+        }
+      ]
+    }
+  }
+]

@@ -1,36 +1,72 @@
 import { defineConfig } from "vitest/config";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import path from "node:path";
+import { createVcr, recordFromEnv } from "./src/testing/node.js";
 
 /**
- * Specs run **inside workerd**, not Node.
+ * Two projects, because the harness has two realms and both need covering.
  *
- * That is not a preference: `AgentDB` drives `ctx.storage.sql` and the Agents
- * SDK's `Session`, neither of which has a Node-side implementation to stand in
- * for. So the pool boots the real runtime with the Durable Objects declared in
- * `wrangler.jsonc`, and `test/worker.ts` is the host that owns them.
+ * **`workers`** — almost everything. Specs run inside workerd, not Node: that is
+ * not a preference, `AgentDB` drives `ctx.storage.sql` and the Agents SDK's
+ * `Session` has no Node-side stand-in. The pool boots the real runtime with the
+ * Durable Objects declared in `wrangler.jsonc`, and `test/worker.ts` is the host
+ * that owns them.
  *
- * The one thing that cannot run in there is the VCR recorder, which needs
- * `node:fs` to read and write cassettes. It runs in the Node realm as
- * `globalSetup` instead, and the spec side reaches it over the in-band control
- * channel — see `src/testing/vcr-shared.ts` for why the two halves must never
- * share a module graph.
+ * **`node`** — `*.node.spec.ts`, the Node-realm half of the VCR harness (the
+ * cassette store reaches `node:fs`, which workerd does not have). Before this
+ * split there was nowhere for those specs to live, so the store had no direct
+ * coverage at all.
  *
- * Note this is `@cloudflare/vitest-pool-workers` 0.18's plugin API
- * (`cloudflareTest()` returning a Vite plugin), not the `defineWorkersConfig`
- * wrapper the older docs show — that export no longer exists.
+ * Core also record/replays its own harness. That is the point: this package
+ * publishes the VCR system, and it shipped broken once — wired to a Miniflare
+ * option the pool had removed — precisely because core had no recorded spec of
+ * its own to notice. `src/testing/vcr.spec.ts` now exercises the whole path,
+ * against a committed cassette, on every `npm test`.
  */
+const vcr = createVcr({
+  snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
+  record: recordFromEnv(),
+  // What makes a cassette safe to commit, and why playback needs no credentials.
+  excludeHeaders: ["authorization", "x-api-key", "cookie", "set-cookie"]
+});
+
 export default defineConfig({
-  plugins: [
-    cloudflareTest({
-      // `main` and every binding come from the one wrangler config, so the
-      // test host and a real deploy can never drift apart.
-      wrangler: { configPath: "./wrangler.jsonc" }
-    })
-  ],
   test: {
-    // Node realm. Flushes cassettes and stops the recorder after the run;
-    // without it a `RECORD=1` run hangs on open sockets.
-    globalSetup: ["./src/testing/vcr-global-setup.ts"],
-    include: ["src/**/*.spec.ts", "test/**/*.spec.ts"]
+    projects: [
+      {
+        plugins: [
+          cloudflareTest({
+            // `main` and every binding come from the one wrangler config, so the
+            // test host and a real deploy can never drift apart.
+            wrangler: { configPath: "./wrangler.jsonc" },
+            // The recorder, on the hook Miniflare 4 and 5 both have. `fetchMock`
+            // is not it — pool 0.20 removed the option, and an unknown key here
+            // is ignored rather than rejected, which is how the previous wiring
+            // failed silently. Every outbound fetch with no active cassette is
+            // blocked, so a spec cannot reach the network by accident either.
+            miniflare: { outboundService: vcr.outboundService }
+          })
+        ],
+        test: {
+          name: "workers",
+          include: ["src/**/*.spec.ts", "test/**/*.spec.ts"],
+          exclude: [
+            "**/node_modules/**",
+            "**/dist/**",
+            // The Node realm — see the `node` project below.
+            "**/*.node.spec.ts"
+          ],
+          // Node realm. Last chance to flush a cassette; each one is already
+          // written when its test releases it, so this is only a safety net.
+          globalSetup: ["./src/testing/vcr-global-setup.ts"]
+        }
+      },
+      {
+        test: {
+          name: "node",
+          include: ["src/**/*.node.spec.ts"]
+        }
+      }
+    ]
   }
 });

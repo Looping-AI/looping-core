@@ -1,0 +1,22 @@
+[
+  {
+    "snapshot": {
+      "request": {
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "url": "https://api.example/rate-limited"
+      },
+      "responses": [
+        {
+          "statusCode": 429,
+          "headers": {
+            "content-type": "text/plain",
+            "retry-after": "2"
+          },
+          "body": "c2xvdyBkb3du"
+        }
+      ]
+    }
+  }
+]
