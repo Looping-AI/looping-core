@@ -1,6 +1,6 @@
 {
   "name": "@loopingai/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared, mandatory foundation for Looping agents on Cloudflare Workers: zero-trust A2A, durable task lifecycle, delegation and subagent runtime, test harness.",
   "keywords": [
     "a2a",
@@ -106,10 +106,9 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": ">=0.18",
     "agents": "^0.20.0",
     "ai": "^7.0.40",
-    "undici": "^7.28.0",
     "vitest": ">=4",
     "workers-ai-provider": "^4.0.0"
   },
@@ -117,15 +116,12 @@
     "@cloudflare/vitest-pool-workers": {
       "optional": true
     },
-    "undici": {
-      "optional": true
-    },
     "vitest": {
       "optional": true
     }
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^26.1.1",
     "agents": "^0.20.0",
     "ai": "^7.0.40",
@@ -134,10 +130,9 @@
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
-    "undici": "7.28.0",
     "vitest": "^4.1.10",
     "workers-ai-provider": "^4.0.0",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.118.0"
   },
   "engines": {
     "node": ">=24"

@@ -57,9 +57,12 @@ follow from that, and all three have already been violated once:
 
 - **Never mix realms in one module graph.** `@loopingai/core/testing` is the
   workerd half (may reach `cloudflare:test`); `@loopingai/core/testing/node` and
-  `/testing/vcr-global-setup` are the Node half (may reach `undici`, `node:fs`).
+  `/testing/vcr-global-setup` are the Node half (may reach `node:fs`).
   `src/testing/vcr-shared.ts` is the only module both may load, and it must stay
   dependency-free. **No runtime subpath may reach any of them.**
+
+  Specs follow the same split: `*.spec.ts` runs inside workerd, `*.node.spec.ts`
+  runs in Node. `vitest.config.ts` is two projects for that reason.
 
 - **Never name a consumer's ambient `Env`.** Core declares its own env slices in
   `src/env.ts` and takes bindings as parameters. The one exception is the
@@ -117,3 +120,42 @@ published tarball.
 Two things `npm test` alone will not catch, so run `npm run check` before
 pushing: vitest transpiles specs without typechecking them, and formatting and
 the type-aware `no-deprecated` rule only run under `check`.
+
+---
+
+## The VCR harness
+
+Core publishes it, so core must run it. It shipped broken once — installed as
+Miniflare's `fetchMock`, an option `@cloudflare/vitest-pool-workers` 0.20 had
+removed — and nothing here noticed, because core had no recorded spec of its own.
+An unknown key in the `miniflare` options is _ignored_, not rejected, so every
+request escaped to the real network and died as `internal error; reference = …`,
+naming nothing. It surfaced in a consumer.
+
+Three rules follow, and the specs pin all three:
+
+- **The recorder is an `outboundService`, never `fetchMock`.** That is the hook
+  `fetchMock` was one line of sugar over (`outboundService = (req) => fetch(req,
+{ dispatcher: fetchMock })`), it is identical in Miniflare 4 and 5, and it has
+  no `instanceof` check in either direction — which is why the pool peer is open
+  (`>=0.18`) and why core declares no `undici` at all. Do not reintroduce either
+  pin. `setupRecording()` proves the recorder answered before any test runs, so
+  the silent-no-op failure cannot recur.
+
+- **Cassettes match on method + URL + body. Never on headers.** undici's
+  `SnapshotAgent` hashed every non-excluded request header, so a cassette carried
+  `cf-worker` and `user-agent: undici` in its key and stopped matching the moment
+  miniflare or workerd changed what it sent. That made every committed cassette
+  version-locked and is half the reason the pool could not be bumped.
+
+- **Playback writes nothing.** `SnapshotAgent` re-saved on close, persisting the
+  `callCount` it mutated on every replay, so a plain `npm test` left committed
+  cassettes dirty in git. The sequence counter is in memory now; if `git status`
+  is ever dirty after a playback run, that regressed.
+
+Cassettes under `test/snapshots/` are hand-written and committed, so core needs
+no credentials and no network to test its own harness. One of them is
+deliberately in the old `SnapshotAgent` format (`hash`, `callCount`, `timestamp`,
+`transfer-encoding: chunked`) — that file is the regression test for reading
+cassettes recorded before the rewrite, including the one in `looping-plugins`
+that cannot be re-recorded without a live ARC key. Do not "tidy" it.

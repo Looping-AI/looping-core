@@ -1,0 +1,28 @@
+[
+  {
+    "snapshot": {
+      "request": {
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "url": "https://api.example/poll"
+      },
+      "responses": [
+        {
+          "statusCode": 200,
+          "headers": {
+            "content-type": "text/plain"
+          },
+          "body": "cGVuZGluZw=="
+        },
+        {
+          "statusCode": 200,
+          "headers": {
+            "content-type": "text/plain"
+          },
+          "body": "ZG9uZQ=="
+        }
+      ]
+    }
+  }
+]

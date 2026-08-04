@@ -198,7 +198,7 @@ not drag in the A2A adapter, and the test harness cannot reach a production bund
 | `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
 | `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
 | `@loopingai/core/testing`      | VCR, `FakeSession`, `mockModel`, DO helpers, JWK fixtures — _workerd realm_ |
-| `@loopingai/core/testing/node` | the VCR recorder — _Node realm, never import from a spec_                   |
+| `@loopingai/core/testing/node` | the VCR recorder + cassette store — _Node realm, never import from a spec_  |
 | `@loopingai/core/eslint`       | the `no-deprecated-object-properties` rule                                  |
 
 `/testing*` and `/eslint` are structurally incapable of entering a runtime graph, and
@@ -363,8 +363,27 @@ await withDb("accepts a turn once", async (db) => {
 ```
 
 - **VCR** — record/replay real HTTP against on-disk cassettes, split across the Node
-  and workerd realms because specs run in workerd, which has no filesystem. Point
-  vitest's `globalSetup` at `@loopingai/core/testing/vcr-global-setup`.
+  and workerd realms because specs run in workerd, which has no filesystem. The
+  recorder is a Miniflare `outboundService`, so it works on any
+  `@cloudflare/vitest-pool-workers` from 0.18 up and needs no `undici`:
+
+  ```ts
+  // vitest.config.ts
+  const vcr = createVcr({
+    snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
+    record: recordFromEnv(), // RECORD=1
+    excludeHeaders: ["authorization", "x-api-key"] // never written to a cassette
+  });
+
+  cloudflareTest({ miniflare: { outboundService: vcr.outboundService } });
+  ```
+
+  Then `setupRecording()` at the top of a spec gives every `it` its own cassette,
+  auto-named from the file + describe + test names. Cassettes match on method, URL
+  and body — never on headers, so a runtime upgrade cannot invalidate them — and a
+  request with no active cassette is blocked rather than reaching the network.
+  Point vitest's `globalSetup` at `@loopingai/core/testing/vcr-global-setup`.
+
 - **Fakes** — `FakeSession` (a `SessionLike` reference implementation) and `mockModel`
   (a scripted `LanguageModel`), so a loop can be driven with no model call at all.
 - **Fixtures** — Ed25519 keypairs and a gateway-JWT signer, so the zero-trust path is
