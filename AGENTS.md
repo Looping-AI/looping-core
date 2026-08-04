@@ -132,7 +132,7 @@ An unknown key in the `miniflare` options is _ignored_, not rejected, so every
 request escaped to the real network and died as `internal error; reference = …`,
 naming nothing. It surfaced in a consumer.
 
-Three rules follow, and the specs pin all three:
+Four rules follow, and the specs pin all of them:
 
 - **The recorder is an `outboundService`, never `fetchMock`.** That is the hook
   `fetchMock` was one line of sugar over (`outboundService = (req) => fetch(req,
@@ -153,9 +153,26 @@ Three rules follow, and the specs pin all three:
   cassettes dirty in git. The sequence counter is in memory now; if `git status`
   is ever dirty after a playback run, that regressed.
 
+- **The on-disk format owes `SnapshotAgent` nothing**, and there is no reader for
+  what it wrote. That is a deliberate cut, not an oversight: its recorder keyed on
+  `String(opts.body)`, and a Worker's POST body reaches a dispatcher as a
+  `ReadableStream`, so every streamed request it captured stored the literal text
+  `[object ReadableStream]` where the payload belonged. Those bodies are
+  unrecoverable, so any reader for them would have to match such entries on
+  method + URL alone — reintroducing exactly the ambiguity the second rule above
+  removes. A cassette from before core 0.3.1 gets re-recorded, not migrated.
+
+A cassette is a flat array of `{ request, responses }`. Two entries that key the
+same are rejected on load rather than merged, because a request issued twice
+belongs in one entry with two `responses` — merging would let a hand-edit slip
+serve the wrong response on the second call, silently.
+
 Cassettes under `test/snapshots/` are hand-written and committed, so core needs
-no credentials and no network to test its own harness. One of them is
-deliberately in the old `SnapshotAgent` format (`hash`, `callCount`, `timestamp`,
-`transfer-encoding: chunked`) — that file is the regression test for reading
-cassettes recorded before the rewrite, including the one in `looping-plugins`
-that cannot be re-recorded without a live ARC key. Do not "tidy" it.
+no credentials and no network to test its own harness.
+
+> **0.3.1 carries a breaking change, deliberately.** Dropping the reader would
+> normally be a minor bump on 0.x. It was skipped for the same reason the v1
+> amendment above was: 0.3.0 had been published hours earlier and nothing
+> resolved it — both consumers were still on `^0.2.0` — so 0.3.0 and 0.3.1 are
+> one change that happened to cross a publish. Treat the format as frozen from
+> here; the next one that breaks it takes a minor.

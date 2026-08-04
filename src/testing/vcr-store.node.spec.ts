@@ -16,8 +16,8 @@ const b64 = (s: string): string => Buffer.from(s).toString("base64");
 const text = (r: { body: Uint8Array }): string =>
   Buffer.from(r.body).toString("utf8");
 
-/** An entry in the exact shape undici's `SnapshotAgent` wrote. */
-function legacyEntry(
+/** A cassette entry: one request and the responses recorded for it. */
+function entry(
   request: Partial<{
     method: string;
     url: string;
@@ -27,23 +27,18 @@ function legacyEntry(
   bodies: string[]
 ) {
   return {
-    hash: "ignored-legacy-hash",
-    snapshot: {
-      request: {
-        method: "GET",
-        url: "https://api.test/thing",
-        headers: {},
-        body: "",
-        ...request
-      },
-      responses: bodies.map((body) => ({
-        statusCode: 200,
-        headers: { "content-type": "application/json" },
-        body: b64(body)
-      })),
-      callCount: 3,
-      timestamp: "2026-07-29T09:25:11.000Z"
-    }
+    request: {
+      method: "GET",
+      url: "https://api.test/thing",
+      headers: {},
+      body: "",
+      ...request
+    },
+    responses: bodies.map((body) => ({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: b64(body)
+    }))
   };
 }
 
@@ -63,10 +58,8 @@ const write = (entries: unknown[]): void =>
   writeFileSync(file, JSON.stringify(entries, null, 2));
 
 describe("Cassette.load", () => {
-  it("replays a cassette written by undici's SnapshotAgent", () => {
-    // The one committed cassette in looping-plugins is in this format, and
-    // re-recording it needs a live ARC key — so reading it is not optional.
-    write([legacyEntry({}, ["hello"])]);
+  it("replays a recorded response", () => {
+    write([entry({}, ["hello"])]);
     const cassette = new Cassette(file);
     cassette.load();
 
@@ -76,11 +69,11 @@ describe("Cassette.load", () => {
   });
 
   it("matches regardless of the request headers the recording carried", () => {
-    // The whole reason for the rewrite. SnapshotAgent hashed every non-excluded
-    // header, so a cassette recorded through one pool version stopped matching
-    // under the next one — `cf-worker` and `user-agent` alone were enough.
+    // The whole reason this store exists. undici's SnapshotAgent hashed every
+    // non-excluded header, so a cassette recorded through one pool version
+    // stopped matching under the next — `cf-worker` and `user-agent` sufficed.
     write([
-      legacyEntry(
+      entry(
         {
           headers: {
             "user-agent": "undici",
@@ -100,29 +93,24 @@ describe("Cassette.load", () => {
     );
   });
 
-  it("merges legacy entries that differed only by a request header", () => {
-    // Two hashes under SnapshotAgent, one key here. Their responses concatenate
-    // in file order, which is the sequential-response semantics `match` walks —
-    // so no recording is lost in the collapse.
+  it("rejects two entries that key the same instead of merging them", () => {
+    // Headers are not part of the key, so these two collide. A request issued
+    // twice belongs in one entry with two `responses` — merging them silently
+    // would mean a hand-edit slip replays the wrong response on the second call
+    // and nothing says so.
     write([
-      legacyEntry({ headers: { "user-agent": "a" } }, ["first"]),
-      legacyEntry({ headers: { "user-agent": "b" } }, ["second"])
+      entry({ headers: { "user-agent": "a" } }, ["first"]),
+      entry({ headers: { "user-agent": "b" } }, ["second"])
     ]);
     const cassette = new Cassette(file);
-    cassette.load();
 
-    expect(text(cassette.match("GET", "https://api.test/thing", "")!)).toBe(
-      "first"
-    );
-    expect(text(cassette.match("GET", "https://api.test/thing", "")!)).toBe(
-      "second"
-    );
+    expect(() => cassette.load()).toThrow(/two entries for GET/);
   });
 
   it("keeps requests apart by body", () => {
     write([
-      legacyEntry({ method: "POST", body: '{"a":1}' }, ["one"]),
-      legacyEntry({ method: "POST", body: '{"a":2}' }, ["two"])
+      entry({ method: "POST", body: '{"a":1}' }, ["one"]),
+      entry({ method: "POST", body: '{"a":2}' }, ["two"])
     ]);
     const cassette = new Cassette(file);
     cassette.load();
@@ -136,7 +124,7 @@ describe("Cassette.load", () => {
   });
 
   it("returns null for a request that was never recorded", () => {
-    write([legacyEntry({}, ["hello"])]);
+    write([entry({}, ["hello"])]);
     const cassette = new Cassette(file);
     cassette.load();
 
@@ -158,7 +146,7 @@ describe("Cassette.match", () => {
     // progression; once it runs out, repeating the final response is what lets
     // a one-response recording serve a loop that runs a different number of
     // times on replay than it did while recording.
-    write([legacyEntry({}, ["frame-1", "frame-2"])]);
+    write([entry({}, ["frame-1", "frame-2"])]);
     const cassette = new Cassette(file);
     cassette.load();
 
@@ -175,27 +163,25 @@ describe("Cassette.match", () => {
     // the committed ARC cassette carries both kinds of header.
     write([
       {
-        snapshot: {
-          request: {
-            method: "GET",
-            url: "https://api.test/thing",
-            headers: {},
-            body: ""
-          },
-          responses: [
-            {
-              statusCode: 200,
-              headers: {
-                "content-type": "application/json",
-                "transfer-encoding": "chunked",
-                connection: "keep-alive",
-                "content-encoding": "gzip",
-                "content-length": "999"
-              },
-              body: b64("{}")
-            }
-          ]
-        }
+        request: {
+          method: "GET",
+          url: "https://api.test/thing",
+          headers: {},
+          body: ""
+        },
+        responses: [
+          {
+            statusCode: 200,
+            headers: {
+              "content-type": "application/json",
+              "transfer-encoding": "chunked",
+              connection: "keep-alive",
+              "content-encoding": "gzip",
+              "content-length": "999"
+            },
+            body: b64("{}")
+          }
+        ]
       }
     ]);
     const cassette = new Cassette(file);
@@ -210,21 +196,19 @@ describe("Cassette.match", () => {
   it("expands a repeated response header into one entry per value", () => {
     write([
       {
-        snapshot: {
-          request: {
-            method: "GET",
-            url: "https://api.test/thing",
-            headers: {},
-            body: ""
-          },
-          responses: [
-            {
-              statusCode: 200,
-              headers: { "set-cookie": ["a=1", "b=2"] },
-              body: b64("{}")
-            }
-          ]
-        }
+        request: {
+          method: "GET",
+          url: "https://api.test/thing",
+          headers: {},
+          body: ""
+        },
+        responses: [
+          {
+            statusCode: 200,
+            headers: { "set-cookie": ["a=1", "b=2"] },
+            body: b64("{}")
+          }
+        ]
       }
     ]);
     const cassette = new Cassette(file);
@@ -241,15 +225,13 @@ describe("Cassette.match", () => {
   it("carries the recorded status through", () => {
     write([
       {
-        snapshot: {
-          request: {
-            method: "GET",
-            url: "https://api.test/thing",
-            headers: {},
-            body: ""
-          },
-          responses: [{ statusCode: 429, headers: {}, body: b64("slow down") }]
-        }
+        request: {
+          method: "GET",
+          url: "https://api.test/thing",
+          headers: {},
+          body: ""
+        },
+        responses: [{ statusCode: 429, headers: {}, body: b64("slow down") }]
       }
     ]);
     const cassette = new Cassette(file);
@@ -280,7 +262,7 @@ describe("Cassette.flush", () => {
     // The failure this pins: SnapshotAgent re-saved unconditionally on close,
     // writing back the callCount it mutated on every replay, so a plain
     // `npm test` left every committed cassette modified in git.
-    write([legacyEntry({}, ["hello"])]);
+    write([entry({}, ["hello"])]);
     const before = readFileSync(file, "utf8");
 
     const cassette = new Cassette(file);
@@ -333,20 +315,19 @@ describe("Cassette.flush", () => {
     );
   });
 
-  it("writes the `snapshot` wrapper, without the volatile bookkeeping", () => {
-    // Same wrapper SnapshotAgent used, so re-recording an old cassette diffs as
-    // content rather than as a reshape of the whole file. `hash` is gone
-    // because the key is derived, and `callCount`/`timestamp` because neither
-    // is needed to replay and both churned the file on every run.
+  it("writes a flat entry and nothing else", () => {
+    // No wrapper, no `hash` (the key is derived), no `callCount`/`timestamp`
+    // (neither is needed to replay, and both churned the file on every run).
+    // The format owes undici's SnapshotAgent nothing.
     const cassette = new Cassette(file);
     cassette.record(request, response);
     cassette.flush();
 
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-      snapshot: Record<string, unknown>;
-    }[];
-    expect(Object.keys(parsed[0])).toEqual(["snapshot"]);
-    expect(Object.keys(parsed[0].snapshot)).toEqual(["request", "responses"]);
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<
+      string,
+      unknown
+    >[];
+    expect(Object.keys(parsed[0])).toEqual(["request", "responses"]);
   });
 });
 

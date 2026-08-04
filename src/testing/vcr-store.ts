@@ -16,8 +16,15 @@
  * are still stored (minus secrets, see {@link CassetteOptions.excludeHeaders})
  * because they are useful to read in a diff, but they cannot break a replay.
  *
- * The on-disk format is deliberately unchanged from `SnapshotAgent`'s, so
- * cassettes recorded before this rewrite replay untouched — see {@link load}.
+ * The on-disk format owes `SnapshotAgent` nothing: a flat array of
+ * {@link CassetteEntry}. Cassettes it wrote are not readable, and deliberately
+ * so — its recorder keyed on `String(opts.body)`, and a Worker's POST body
+ * reaches a dispatcher as a `ReadableStream`, so every streamed request it ever
+ * captured stored the literal text `[object ReadableStream]` where the payload
+ * belonged. Those bodies are not recoverable from the file, and a reader that
+ * papered over it would have to match such entries on method + URL alone —
+ * quietly reintroducing the ambiguity this store exists to remove. Re-record
+ * instead.
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -31,7 +38,7 @@ export interface RecordedRequest {
   body: string;
 }
 
-/** A stored response. `body` is base64, as `SnapshotAgent` wrote it. */
+/** A stored response. `body` is base64, so a binary payload survives the file. */
 export interface RecordedResponse {
   statusCode: number;
   headers: Record<string, string | string[]>;
@@ -127,10 +134,10 @@ export function replayable(response: RecordedResponse): ReplayableResponse {
  * One cassette file, loaded lazily and written only when it has changed.
  *
  * Playback is **read-only**: nothing here mutates on a replay, which is what
- * stops a plain `npm test` from dirtying committed cassettes. `SnapshotAgent`
- * persisted its `callCount` and re-saved on close, so every run left the files
- * modified; the equivalent counter here ({@link #calls}) is in memory and dies
- * with the process.
+ * stops a plain `npm test` from dirtying committed cassettes. The sequence
+ * counter ({@link #calls}) is in memory and dies with the process, deliberately
+ * — `SnapshotAgent` persisted its equivalent and re-saved on close, so every
+ * run left every cassette modified in git.
  */
 export class Cassette {
   readonly #file: string;
@@ -160,16 +167,13 @@ export class Cassette {
   }
 
   /**
-   * Read the file into memory. Tolerates both shapes: `SnapshotAgent` wrapped
-   * each entry in `{ hash, snapshot: { request, responses } }`, this writes the
-   * same wrapper (so a re-record diffs cleanly against an old cassette) but
-   * ignores `hash`, `callCount` and `timestamp` — all three were volatile
-   * bookkeeping and none is needed to replay.
+   * Read the file into memory, keying each entry by its own request rather than
+   * trusting anything stored alongside it.
    *
-   * Entries are re-keyed on load rather than trusted, which is the point of the
-   * rewrite. Two legacy entries that differed *only* by a request header now
-   * collapse onto one key; their responses are concatenated in file order,
-   * which is exactly the sequential-response semantics {@link match} walks.
+   * Two entries that key the same are a mistake rather than a merge: a request
+   * that was issued twice belongs in one entry with two `responses`, which is
+   * what {@link match} walks. Saying so here turns a hand-edit slip into a named
+   * error instead of a replay that silently serves the wrong response second.
    */
   load(): void {
     if (!existsSync(this.#file)) return;
@@ -177,14 +181,17 @@ export class Cassette {
     if (!Array.isArray(raw)) {
       throw new Error(`VCR cassette ${this.#file} is not a JSON array`);
     }
-    for (const item of raw) {
-      const entry = ((item as { snapshot?: CassetteEntry }).snapshot ??
-        item) as CassetteEntry;
+    for (const entry of raw as CassetteEntry[]) {
       const { request, responses } = entry;
       const key = requestKey(request.method, request.url, request.body ?? "");
-      const existing = this.#entries.get(key);
-      if (existing) existing.responses.push(...responses);
-      else this.#entries.set(key, { request, responses: [...responses] });
+      if (this.#entries.has(key)) {
+        throw new Error(
+          `VCR cassette ${path.basename(this.#file)} has two entries for ` +
+            `${request.method} ${request.url} with the same body. Put the ` +
+            `responses in one entry's \`responses\` array instead.`
+        );
+      }
+      this.#entries.set(key, { request, responses: [...responses] });
     }
   }
 
@@ -193,10 +200,9 @@ export class Cassette {
    * recorded.
    *
    * Repeated identical requests walk `responses` in order and then **hold on
-   * the last one**, matching what `SnapshotAgent` did
-   * (`responses[min(callCount, length - 1)]`). A recording that captured one
-   * response therefore replays it for every call, which is what a poll loop
-   * needs.
+   * the last one**, so a recording that captured a single response replays it
+   * for every call — which is what a poll loop needs when it runs a different
+   * number of times on replay than it did while recording.
    */
   match(method: string, url: string, body: string): ReplayableResponse | null {
     const key = requestKey(method, url, body);
@@ -235,9 +241,7 @@ export class Cassette {
   flush(): void {
     if (!this.#dirty) return;
     mkdirSync(path.dirname(this.#file), { recursive: true });
-    const entries = [...this.#entries.values()].map((snapshot) => ({
-      snapshot
-    }));
+    const entries = [...this.#entries.values()];
     writeFileSync(this.#file, `${JSON.stringify(entries, null, 2)}\n`);
     this.#dirty = false;
   }
