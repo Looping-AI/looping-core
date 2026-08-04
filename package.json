@@ -100,15 +100,15 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.0.0",
-    "@cloudflare/workers-types": "^5.20260801.1",
+    "@cloudflare/workers-types": "^5.20260804.1",
     "drizzle-orm": "^0.45.2",
-    "jose": "^6.2.7",
+    "jose": "^6.2.8",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@cloudflare/vitest-pool-workers": ">=0.18",
     "agents": "^0.20.0",
-    "ai": "^7.0.40",
+    "ai": "^7.0.51",
     "vitest": ">=4",
     "workers-ai-provider": "^4.0.0"
   },
@@ -129,7 +129,7 @@
     "eslint": "^10.8.0",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0",
+    "typescript-eslint": "^8.66.0",
     "vitest": "^4.1.10",
     "workers-ai-provider": "^4.0.0",
     "wrangler": "^4.118.0"
