@@ -1,0 +1,53 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Superseded PR runs are cancelled; main is not, because Release keys off the
+# run that Test completes there.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v6
+        with:
+          # One source of truth with local dev; `engines` requires >=24.
+          node-version-file: .nvmrc
+
+      - run: npm ci
+
+      # `npm test` alone would pass on code that neither typechecks nor formats:
+      # vitest transpiles specs without checking them, and the type-aware
+      # `no-deprecated` rule only runs here. `check` also builds, which the
+      # export gate below reads.
+      - run: npm run check
+
+      # Inside real workerd, against committed cassettes — so this needs no
+      # credentials and no network, and any outbound fetch without one is
+      # blocked rather than escaping to the real endpoint.
+      - run: npm test
+
+      # Playback writes nothing. The old recorder re-saved on close and left
+      # committed cassettes dirty in git; if that regresses it fails here
+      # instead of in someone's `git status`.
+      - run: git diff --exit-code -- test/snapshots
+
+      # The defects that only fail at a consumer: a subpath resolving to a file
+      # that never emitted, a relative import missing its `.js`, a runtime
+      # subpath able to reach `node:*` or `cloudflare:test`. `prepack` runs this
+      # too, but by then the mistake is already on its way to npm.
+      - run: npm run verify:exports

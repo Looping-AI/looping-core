@@ -79,15 +79,13 @@ function seed(responses = [{ statusCode: 200, headers: {}, body: b64("ok") }]) {
     path.join(dir, CASSETTE),
     JSON.stringify([
       {
-        snapshot: {
-          request: {
-            method: "GET",
-            url: "https://api.test/thing",
-            headers: {},
-            body: ""
-          },
-          responses
-        }
+        request: {
+          method: "GET",
+          url: "https://api.test/thing",
+          headers: {},
+          body: ""
+        },
+        responses
       }
     ])
   );
