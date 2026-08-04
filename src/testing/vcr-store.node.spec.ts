@@ -119,6 +119,60 @@ describe("Cassette.load", () => {
     );
   });
 
+  it("replays a legacy entry whose body the old recorder never captured", () => {
+    // `SnapshotAgent` keyed on `String(opts.body)`, and a Worker's POST body
+    // reaches the dispatcher as a `ReadableStream` — so every streamed request
+    // in every pre-rewrite cassette stored this constant instead of a payload.
+    // The bytes are not in the file, so these entries match on method + URL
+    // alone, which is exactly what the old recorder did with them.
+    write([
+      legacyEntry({ method: "POST", body: "[object ReadableStream]" }, [
+        "opened"
+      ])
+    ]);
+    const cassette = new Cassette(file);
+    cassette.load();
+
+    expect(text(cassette.match("POST", "https://api.test/thing", "{}")!)).toBe(
+      "opened"
+    );
+  });
+
+  it("walks a legacy body-less entry's responses in call order", () => {
+    // Two POSTs with different real bodies collapsed onto one entry under the
+    // old recorder — the ARC cassette's two `RESET`s are exactly this — so the
+    // responses must still be handed out in the order they were recorded.
+    write([
+      legacyEntry({ method: "POST", body: "[object ReadableStream]" }, [
+        "first-game",
+        "second-game"
+      ])
+    ]);
+    const cassette = new Cassette(file);
+    cassette.load();
+
+    const url = "https://api.test/thing";
+    expect(text(cassette.match("POST", url, '{"game":"a"}')!)).toBe(
+      "first-game"
+    );
+    expect(text(cassette.match("POST", url, '{"game":"b"}')!)).toBe(
+      "second-game"
+    );
+  });
+
+  it("prefers an exact body match over a legacy body-less one", () => {
+    write([
+      legacyEntry({ method: "POST", body: "[object ReadableStream]" }, ["old"]),
+      legacyEntry({ method: "POST", body: '{"a":1}' }, ["exact"])
+    ]);
+    const cassette = new Cassette(file);
+    cassette.load();
+
+    expect(
+      text(cassette.match("POST", "https://api.test/thing", '{"a":1}')!)
+    ).toBe("exact");
+  });
+
   it("keeps requests apart by body", () => {
     write([
       legacyEntry({ method: "POST", body: '{"a":1}' }, ["one"]),

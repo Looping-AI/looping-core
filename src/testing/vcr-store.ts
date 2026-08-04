@@ -89,6 +89,27 @@ export function requestKey(method: string, url: string, body: string): string {
   return `${method.toUpperCase()}\n${url}\n${digest}`;
 }
 
+/**
+ * What undici's `SnapshotAgent` wrote for a request body it never read.
+ *
+ * Its recorder keyed on `String(opts.body)`, and at the dispatcher level a
+ * Worker's POST body arrives as a `ReadableStream` — so every streamed request
+ * it ever recorded stored this one constant instead of its payload. The bytes
+ * are simply not in the file, for any cassette recorded before this rewrite.
+ *
+ * That was a silent correctness hole in the old harness, not merely a cosmetic
+ * one: two POSTs to the same URL with *different* bodies hashed identically, so
+ * playback could serve the response recorded for the other one. It shows up in
+ * the wild — the ARC cassette's `POST /api/cmd/RESET` entry holds two responses
+ * for two resets of different games, collapsed onto this key.
+ */
+const UNCAPTURED_BODY = "[object ReadableStream]";
+
+/** Key for an entry whose body was never captured: method and URL only. */
+function bodyAgnosticKey(method: string, url: string): string {
+  return `${method.toUpperCase()}\n${url}\n*`;
+}
+
 function filterHeaders(
   headers: Record<string, string | string[]>,
   exclude: Set<string>
@@ -181,7 +202,15 @@ export class Cassette {
       const entry = ((item as { snapshot?: CassetteEntry }).snapshot ??
         item) as CassetteEntry;
       const { request, responses } = entry;
-      const key = requestKey(request.method, request.url, request.body ?? "");
+      const body = request.body ?? "";
+      // A body the old recorder never captured cannot be matched on. Keying
+      // these on method + URL alone is not a guess: it is precisely what
+      // `SnapshotAgent` did with them, since it hashed this same constant for
+      // every one, so the sequence a cassette replays is unchanged.
+      const key =
+        body === UNCAPTURED_BODY
+          ? bodyAgnosticKey(request.method, request.url)
+          : requestKey(request.method, request.url, body);
       const existing = this.#entries.get(key);
       if (existing) existing.responses.push(...responses);
       else this.#entries.set(key, { request, responses: [...responses] });
@@ -199,8 +228,15 @@ export class Cassette {
    * needs.
    */
   match(method: string, url: string, body: string): ReplayableResponse | null {
-    const key = requestKey(method, url, body);
-    const entry = this.#entries.get(key);
+    let key = requestKey(method, url, body);
+    let entry = this.#entries.get(key);
+    if (!entry) {
+      // Fall back to an entry the old recorder stored without its body. Tried
+      // second, so a cassette holding both an exact match and a legacy one
+      // still prefers the exact one.
+      key = bodyAgnosticKey(method, url);
+      entry = this.#entries.get(key);
+    }
     if (!entry) return null;
     const call = this.#calls.get(key) ?? 0;
     this.#calls.set(key, call + 1);
