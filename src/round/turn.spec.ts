@@ -40,11 +40,6 @@ import type { RoundPolicy } from "./policy.js";
  * rather than throwing away work the user asked for and paid for.
  */
 
-const MODELS = {
-  primaryModelId: TEST_MODELS.chatModelId,
-  fallbackModelId: TEST_MODELS.fallbackChatModelId
-};
-
 /**
  * A stand-in for a plugin-declared type. Core cannot import the starter's, and
  * should not: what these specs need is *a* type with a name, so the contract
@@ -58,8 +53,6 @@ const generalType: SubtaskTypeSpec = {
   recipe: {
     key: "general",
     version: 1,
-    primaryModelId: MODELS.primaryModelId,
-    fallbackModelId: MODELS.fallbackModelId,
     soul: "You are a general subagent.",
     toolFamilies: [],
     enabled: true,
@@ -107,8 +100,8 @@ function pair(primary: ReturnType<typeof mockModel>, fallback = primary) {
   return {
     primary: () => primary,
     fallback: () => fallback,
-    primaryId: () => MODELS.primaryModelId,
-    fallbackId: () => MODELS.fallbackModelId
+    primaryId: () => TEST_MODELS.chatModelId,
+    fallbackId: () => TEST_MODELS.fallbackChatModelId
   } as unknown as ModelPair;
 }
 

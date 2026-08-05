@@ -250,12 +250,8 @@ export function createAgentRuntime(
   }
 
   const policy: RecipePolicy = {
-    modelAllowlist: new Set([
-      config.model.chatModelId,
-      config.model.fallbackChatModelId
-    ]),
-    defaultPrimaryModelId: config.model.chatModelId,
-    defaultFallbackModelId: config.model.fallbackChatModelId,
+    primaryModelId: config.model.chatModelId,
+    fallbackModelId: config.model.fallbackChatModelId,
     knownToolFamilies: new Set(toolFamilies.keys()),
     baselineLimits: config.subagentLimits
   };

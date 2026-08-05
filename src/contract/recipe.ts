@@ -82,8 +82,30 @@ export type RecipeLimits = AgentLimits;
 export interface ResolvedRecipe {
   key: string;
   version: number;
-  primaryModelId: string;
-  fallbackModelId: string;
+  // A recipe states **no model**, and there is no field here to state one with.
+  //
+  // It briefly could, as an optional "preference" that `validateRecipe`
+  // substituted away for any id outside the host's allowlist. That capability
+  // was empty and harmful in equal measure:
+  //
+  // - **Empty.** The allowlist is built in exactly one place, from exactly the
+  //   host's two configured models. So a preference could never reach a third
+  //   model — the cheaper, smaller one the feature was documented as being
+  //   for. All it could express was "run me on the host's *fallback* instead of
+  //   its primary", which nothing wants.
+  // - **Harmful.** The two slots substituted independently, so preferring the
+  //   host's fallback as a primary and omitting the fallback landed the same id
+  //   in both — silently defeating the distinct-pair invariant `resolveConfig`
+  //   enforces, and turning the fallback into a retry against the model that
+  //   just failed.
+  //
+  // Which model an agent runs on is the agent's decision, made once in its
+  // config. A recipe describes *what work is* — soul, tools, budget, context —
+  // and a plugin shipping one has no idea what its consumer is billed for.
+  //
+  // {@link ValidatedRecipe} carries the resolved pair, because a runner needs
+  // one. It comes from the host, always, with no way for recipe data to
+  // influence it.
   /** Required, never defaulted — see `validateRecipe`. */
   soul: string;
   toolFamilies: string[];
@@ -111,6 +133,20 @@ export interface ResolvedRecipe {
  */
 export interface ValidatedRecipe extends ResolvedRecipe {
   limits: RecipeLimits;
+  /**
+   * The pair this recipe will actually run on — **the host's, always**.
+   *
+   * These exist only here, never on {@link ResolvedRecipe}, and that asymmetry
+   * is the design: a recipe cannot state a model, so the only way to hold one is
+   * to have been through {@link validateRecipe}, which copies the host's. Recipe
+   * data has no path to influence them.
+   *
+   * Guaranteed non-empty and guaranteed distinct, because `resolveConfig`
+   * refuses a config that is either — so the fallback is always a genuinely
+   * different model from the primary, which is the entire point of having one.
+   */
+  primaryModelId: string;
+  fallbackModelId: string;
 }
 
 /**

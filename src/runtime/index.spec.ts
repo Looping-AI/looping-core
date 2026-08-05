@@ -32,8 +32,6 @@ import type { ResolvedRecipe, SubtaskTypeSpec } from "../contract/recipe.js";
 const recipe = (key: string): ResolvedRecipe => ({
   key,
   version: 1,
-  primaryModelId: TEST_MODELS.chatModelId,
-  fallbackModelId: TEST_MODELS.fallbackChatModelId,
   soul: `You are the ${key} subagent.`,
   toolFamilies: [],
   enabled: true,
@@ -190,7 +188,8 @@ describe("createAgentRuntime — what it composes", () => {
     });
 
     expect([...rt.policy.knownToolFamilies]).toEqual(["alphaTools"]);
-    expect(rt.policy.modelAllowlist.has(TEST_MODELS.chatModelId)).toBe(true);
+    // The pair every recipe runs on is the host's, carried on the policy.
+    expect(rt.policy.primaryModelId).toBe(TEST_MODELS.chatModelId);
   });
 
   it("routes lifecycle hooks to the plugin owning the subtask type", async () => {
@@ -586,11 +585,12 @@ describe("createAgentRuntime — what it composes", () => {
       config: { model: TEST_MODELS }
     });
     expect(rt.config.model.chatModelId).toBe(TEST_MODELS.chatModelId);
-    // The allowlist a recipe's models are checked against is built from these,
-    // so an agent that named nothing would validate every recipe against "".
-    expect(rt.policy.modelAllowlist).toEqual(
-      new Set([TEST_MODELS.chatModelId, TEST_MODELS.fallbackChatModelId])
-    );
+    // The pair every recipe runs on is carried straight through to the policy —
+    // there is no allowlist, because there is nothing for a recipe to select.
+    expect(rt.policy.primaryModelId).toBe(TEST_MODELS.chatModelId);
+    expect(rt.policy.fallbackModelId).toBe(TEST_MODELS.fallbackChatModelId);
+    // …and stays distinct, so the fallback is never a retry of the primary.
+    expect(rt.policy.primaryModelId).not.toBe(rt.policy.fallbackModelId);
   });
 });
 
