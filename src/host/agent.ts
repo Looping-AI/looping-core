@@ -322,8 +322,7 @@ export abstract class LoopingAgent<
    */
   async saveTask(task: Task): Promise<boolean> {
     if (stateOf(task) === TaskState.TASK_STATE_CANCELED) {
-      await this.markCanceled(task.id, task);
-      return true;
+      return (await this.markCanceled(task.id, task)) !== null;
     }
     return this.db.tasks.save(task);
   }
@@ -351,14 +350,18 @@ export abstract class LoopingAgent<
    *
    * `task` is supplied when the caller already built the canceled Task (the
    * a2a-js cancel branch attaches its own status message); otherwise the row's
-   * own guarded flip produces it.
+   * own guarded flip produces it. Both paths are guarded against the same race:
+   * a task that already reached `completed`/`failed` refuses the write, and its
+   * verdict — not a `get` read straight after, which would return that
+   * unchanged terminal row and be mistaken for a successful cancellation — is
+   * what decides whether {@link onTaskCanceled} runs at all.
    */
   private async markCanceled(
     taskId: string,
     task?: Task
   ): Promise<PlainTask | null> {
     const canceled = task
-      ? (this.db.tasks.save(task), this.db.tasks.get(taskId))
+      ? this.db.tasks.save(task) && this.db.tasks.get(taskId)
       : this.db.tasks.cancel(taskId);
     if (!canceled) return null;
     await this.onTaskCanceled(taskId);

@@ -175,6 +175,30 @@ describe("the ordinary path", () => {
     expect(calls).toContain("saveTask");
   });
 
+  it("still notifies when the sweep fails after its retries are exhausted", async () => {
+    // The terminal Task is already durably saved by the time sweep runs, so a
+    // stuck or unreachable cleanup RPC must not strand the gateway without its
+    // result — logged and skipped, not fatal to `notify`.
+    const { stub } = fakeAgent();
+    const spy = {
+      ...stub,
+      async sweepTaskChildren() {
+        throw new Error("facet unreachable");
+      }
+    };
+    const { step, ran } = fakeStep({
+      cached: {
+        "turn:0": { status: "replied", reply: "the answer", turns: 1 },
+        notify: undefined
+      }
+    });
+
+    await runHandleTask(params(), step, deps(spy));
+
+    expect(ran).toContain("sweep");
+    expect(ran).toContain("notify");
+  });
+
   it("reads the clock inside a step, so a replay sees the original instant", async () => {
     // `started` exists to be cached. A workflow that retried overnight and
     // re-read `Date.now()` would restart its own deadline and never observe the

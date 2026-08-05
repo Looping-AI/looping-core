@@ -436,9 +436,21 @@ async function deliver(
   // chunk — keeps `deleteSubAgent`'s facet-abort from landing on a still-open
   // `executeChunk` RPC, which telemetry mis-records as a failure. Best-effort and
   // idempotent, so it is safe on replay.
-  await step.do("sweep", async () => {
-    await stub.sweepTaskChildren(p.taskId);
-  });
+  //
+  // Caught, not left to propagate: the terminal Task is already durably saved, so
+  // a sweep that still fails once the step's own retries are exhausted must not
+  // block `notify` below — the gateway is owed its result regardless of whether
+  // this Task's children were reclaimed.
+  try {
+    await step.do("sweep", async () => {
+      await stub.sweepTaskChildren(p.taskId);
+    });
+  } catch (err) {
+    console.error("[handle-task] sweep failed after retries", {
+      taskId: p.taskId,
+      err: String(err)
+    });
+  }
 
   // Notify the gateway: a card-key-signed callback POST. Retried by the step on a
   // non-2xx; the terminal messageId is deterministic and the gateway is

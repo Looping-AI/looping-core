@@ -158,7 +158,12 @@ import { LoopingAgent, type PluginHost } from "@loopingai/core/host";
 
 export class MyAgent extends LoopingAgent<Env> {
   protected agentConfig() {
-    return { model: { chatModelId: "@cf/zai-org/glm-5.2" } };
+    return {
+      model: {
+        chatModelId: "@cf/zai-org/glm-5.2",
+        fallbackChatModelId: "@cf/meta/llama-4-scout-17b-16e-instruct"
+      }
+    };
   }
   protected agentPlugins(host: PluginHost<Env>) {
     return [scraper({ apiKey: host.env.SCRAPER_API_KEY })];

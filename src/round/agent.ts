@@ -782,18 +782,28 @@ export abstract class RoundAgentBase<
   /**
    * Interrupt a canceled Task's live children: each `running` Subtask's managed
    * child gets `abortRun`, so a long recipe stops at its current model call
-   * instead of at the next chunk boundary (up to `chunkSoftMs` later).
+   * instead of at the next chunk boundary (up to `chunkSoftMs` later). A subtask
+   * that already finished (e.g. one branch of a wave completed while another was
+   * still running) is deliberately retained until the terminal-delivery sweep —
+   * but a canceled Task never reaches delivery, so its idle child is deleted
+   * here instead, or it would leak until the 30-day row cleanup regardless of
+   * that row's own age.
    *
-   * Only `running` rows have a live child. `subAgent` *creates* a facet that does
-   * not exist, so a wider fan-out would materialize children just to abort them.
-   * Bounded by `maxSubtasks`. Best-effort throughout: a child that cannot be
-   * reached is logged, never fatal — cancellation must not fail because cleanup
-   * did.
+   * Only `running` rows have a live RPC to abort. `subAgent` *creates* a facet
+   * that does not exist, so calling it for a `pending` row (no facet was ever
+   * made) would materialize one just to delete it — `deleteChildQuietly` is a
+   * silent no-op there, so it is called unconditionally instead of branching on
+   * status. Bounded by `maxSubtasks`. Best-effort throughout: a child that
+   * cannot be reached is logged, never fatal — cancellation must not fail
+   * because cleanup did.
    */
   protected override async onTaskCanceled(taskId: string): Promise<void> {
     for (const subtask of this.db.subtasks.list(taskId)) {
-      if (subtask.status !== "running") continue;
       const name = subagentName(taskId, subtask.id);
+      if (subtask.status !== "running") {
+        await this.deleteChildQuietly(name);
+        continue;
+      }
       try {
         const child = await this.subAgent(this.subagentClass(), name);
         // `false` means there was no in-flight RPC to interrupt. That is not the

@@ -22,7 +22,6 @@
 import { type JWK } from "jose";
 import { Role, type Message, type Task, type TaskState } from "@a2a-js/sdk";
 
-/** The gateway origin used in all tests. Must match vitest.config.ts and the MockAgent setup. */
 /**
  * A model pair for specs, and the only place one should be spelled.
  *
@@ -41,6 +40,7 @@ export const TEST_MODELS = {
   fallbackChatModelId: "test:fallback"
 } as const;
 
+/** The gateway origin used in all tests. Must match vitest.config.ts and the MockAgent setup. */
 export const GATEWAY_ORIGIN = "https://gateway.test";
 
 /** Agent origin matching `url.origin` for requests to `http://localhost`. */

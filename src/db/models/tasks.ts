@@ -167,15 +167,36 @@ export function makeTasks(db: DB) {
      * it. That closes the window between a workflow's terminal build and its
      * callback — the read-check-write is synchronous here, so a `CancelTask`
      * landing mid-delivery makes this return `false` and the notify never fires.
-     * Writing `canceled` onto a live row stays allowed: that is how the a2a-js
-     * handler's own cancel branch records the cancellation.
+     *
+     * The reverse direction is guarded too: writing `canceled` over an already
+     * `completed`/`failed` row is refused, mirroring {@link cancel}'s own source
+     * guard. Without it, a cancellation landing between the Workflow's `complete`
+     * and `notify` steps — separate, independently-retried steps — could flip
+     * storage to canceled while `deliver()` still posts the cached completed
+     * task it already built, the exact race this guard exists to close. Writing
+     * `canceled` onto a `submitted`/`working` row, or re-writing it onto an
+     * already-`canceled` one, stays allowed: that is how the a2a-js handler's own
+     * cancel branch records the cancellation.
      */
     save(task: Task): boolean {
       const existing = readOne(task.id);
+      if (existing === null) {
+        upsert(task);
+        return true;
+      }
+      const existingState = stateOf(existing);
+      const incomingState = stateOf(task);
       if (
-        existing !== null &&
-        stateOf(existing) === TaskState.TASK_STATE_CANCELED &&
-        stateOf(task) !== TaskState.TASK_STATE_CANCELED
+        existingState === TaskState.TASK_STATE_CANCELED &&
+        incomingState !== TaskState.TASK_STATE_CANCELED
+      ) {
+        return false;
+      }
+      if (
+        incomingState === TaskState.TASK_STATE_CANCELED &&
+        existingState !== TaskState.TASK_STATE_SUBMITTED &&
+        existingState !== TaskState.TASK_STATE_WORKING &&
+        existingState !== TaskState.TASK_STATE_CANCELED
       ) {
         return false;
       }
@@ -206,13 +227,26 @@ export function makeTasks(db: DB) {
     },
 
     /**
-     * Flip the task to `canceled` and return it. Terminal: once this lands,
-     * {@link save} refuses every non-canceled write, so no completed or failed
-     * callback can be built from this row afterwards.
+     * Flip the task to `canceled` and return it, or `null` if the row is not
+     * eligible — unknown, or already past `submitted`/`working`. Guarding the
+     * source state (not just the destination, as {@link save} does) matters
+     * because `complete`/`notify` are separate Workflow steps: without this, a
+     * cancellation landing between them would flip an already-`completed` or
+     * `failed` row to `canceled` right as `deliver()` posts the terminal
+     * callback it had already built, silently rewriting a delivered result.
+     * Terminal: once this lands, {@link save} refuses every non-canceled write,
+     * so no completed or failed callback can be built from this row afterwards.
      */
     cancel(taskId: string): PlainTask | null {
       const task = readOne(taskId);
       if (!task) return null;
+      const state = stateOf(task);
+      if (
+        state !== TaskState.TASK_STATE_SUBMITTED &&
+        state !== TaskState.TASK_STATE_WORKING
+      ) {
+        return null;
+      }
       task.status = {
         ...task.status,
         state: TaskState.TASK_STATE_CANCELED,
