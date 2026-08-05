@@ -24,8 +24,6 @@ import type { ResolvedRecipe } from "../contract/recipe.js";
 const recipe = (over: Partial<ResolvedRecipe> = {}): ResolvedRecipe => ({
   key: "r",
   version: 1,
-  primaryModelId: "@cf/a/model",
-  fallbackModelId: "@cf/b/model",
   soul: "you are a subagent",
   toolFamilies: ["workspace"],
   enabled: true,
@@ -128,12 +126,16 @@ describe("what MUST change the fingerprint", () => {
     ).not.toBe(await base());
   });
 
-  it("separates a changed prompt, soul, model or recipe version", async () => {
+  it("separates a changed prompt, soul, tool set or recipe version", async () => {
+    // Note what is *not* here: the model pair. A recipe cannot state one, and
+    // the host's is deliberately outside the fingerprint — see
+    // `canonicalRequest`. Changing your configured models does not restart every
+    // in-flight run from turn zero with its budget already spent.
     const differs = await Promise.all([
       fingerprintRequest(request({ prompt: "something else" })),
       fingerprintRequest(request({ recipe: recipe({ soul: "different" }) })),
       fingerprintRequest(
-        request({ recipe: recipe({ primaryModelId: "@cf/other/model" }) })
+        request({ recipe: recipe({ toolFamilies: ["something-else"] }) })
       ),
       fingerprintRequest(request({ recipe: recipe({ version: 2 }) }))
     ]);

@@ -5,12 +5,12 @@ import type { ResolvedRecipe, ValidatedRecipe } from "./recipe.js";
  * The capability boundary every recipe passes through, whatever declared it.
  *
  * This module imports no domain. It owns only what code must be able to say
- * about *any* recipe: which models and tool families it may select, and how a
- * malformed one is made safe or refused. A domain cannot widen its
- * *capabilities* by declaring them, because the allowlists do not come from the
- * declaration — they come from {@link RecipePolicy}, which the host builds from
- * its resolved config and its installed plugins. Its budget is the deliberate
- * exception; see {@link resolveLimits}.
+ * about *any* recipe: which tool families it may select, which models it runs
+ * on, and how a malformed one is made safe or refused. A domain cannot widen
+ * its *capabilities* by declaring them — the legal tool families come from
+ * {@link RecipePolicy}, which the host builds from its installed plugins, and
+ * the model pair comes from the host's config with no declaration involved at
+ * all. Its budget is the deliberate exception; see {@link resolveLimits}.
  *
  * In the predecessor repo the two allowlists were module constants, and one of
  * them hardcoded a domain key (`"arc-game"`) inside otherwise generic code. That
@@ -19,15 +19,19 @@ import type { ResolvedRecipe, ValidatedRecipe } from "./recipe.js";
  */
 export interface RecipePolicy {
   /**
-   * Model ids a recipe may select — normally the two configured chat models, the
-   * only ones proven with this tool-loop pipeline. Extend deliberately, one
-   * validated model at a time.
+   * The pair every recipe runs on: the host agent's own, copied verbatim onto
+   * each {@link ValidatedRecipe}.
+   *
+   * There is no allowlist any more, because there is nothing to check against
+   * it — a recipe cannot state a model. `modelAllowlist` existed to police
+   * recipe-stated preferences, and it could only ever contain these same two
+   * ids, so the "preference" it policed could never reach a third model. It
+   * could only swap the primary for the fallback, which is not a capability
+   * anyone wants and which broke the pair's distinctness.
    */
-  modelAllowlist: ReadonlySet<string>;
-  /** Substituted when a recipe names a primary model outside the allowlist. */
-  defaultPrimaryModelId: string;
-  /** Substituted when a recipe names a fallback model outside the allowlist. */
-  defaultFallbackModelId: string;
+  primaryModelId: string;
+  /** See {@link primaryModelId}. Guaranteed distinct from it by `resolveConfig`. */
+  fallbackModelId: string;
   /**
    * Tool-family keys the runtime recognizes — derived from the installed
    * plugins, never hardcoded.
@@ -86,12 +90,12 @@ export class RecipeValidationError extends Error {
 
 /**
  * Code-owned defensive validation of an already-resolved recipe. Returns a
- * normalized copy (never mutates the input): a model id outside the policy's
- * allowlist is substituted with the default for its slot — independently per
- * slot — and unknown tool families are dropped (deduped, order-preserving).
+ * normalized copy (never mutates the input): the host's model pair is stamped
+ * on, and unknown tool families are dropped (deduped, order-preserving).
  * Applied by the parent when it resolves a recipe and re-applied by the subagent
  * on its inbound request, so recipe data can never select arbitrary models or
- * tools.
+ * tools — models because there is no field to select one with, tools because
+ * the legal set comes from the installed plugins rather than the declaration.
  *
  * The split between what is normalized and what is refused follows one rule:
  * **the host declares a baseline ⇒ merge; it does not ⇒ require.** `limits`
@@ -124,30 +128,23 @@ export function validateRecipe(
   const toolFamilies = [...new Set(recipe.toolFamilies)].filter((family) =>
     policy.knownToolFamilies.has(family)
   );
-  // A recipe's model ids are an optional *preference*. Omitting them — which is
-  // what a published plugin should do, since it cannot know what its host is
-  // billed for — and naming something outside the host's allowlist both resolve
-  // to the host's own pair.
-  //
-  // The `undefined` check is redundant at runtime (`undefined` is never in an
-  // allowlist) and kept for the type: it is what narrows `string | undefined`
-  // to `string`, which is what lets `ValidatedRecipe` require both fields.
-  //
-  // The host's pair is guaranteed non-empty upstream — `CoreConfigOverrides`
-  // requires it and `resolveConfig` refuses an empty or self-identical one — so
-  // there is always something real to substitute.
-  const prefer = (wanted: string | undefined, fallbackTo: string): string =>
-    wanted !== undefined && policy.modelAllowlist.has(wanted)
-      ? wanted
-      : fallbackTo;
-
   return {
     ...recipe,
-    primaryModelId: prefer(recipe.primaryModelId, policy.defaultPrimaryModelId),
-    fallbackModelId: prefer(
-      recipe.fallbackModelId,
-      policy.defaultFallbackModelId
-    ),
+    // The host's pair, copied. Not selected, not substituted, not merged —
+    // there is nothing on a `ResolvedRecipe` to select *from*.
+    //
+    // This used to substitute a recipe's stated preference against
+    // an allowlist, per slot and independently. That produced a real defect:
+    // a recipe preferring the host's *fallback* as its primary, and stating no
+    // fallback of its own, resolved to the same id in both slots — so the
+    // fallback retried the model that had just failed, defeating the distinct-
+    // pair invariant `resolveConfig` enforces one layer up.
+    //
+    // Copying wholesale makes that unrepresentable: the pair here is exactly the
+    // pair the agent configured, which `resolveConfig` has already guaranteed is
+    // non-empty and distinct.
+    primaryModelId: policy.primaryModelId,
+    fallbackModelId: policy.fallbackModelId,
     toolFamilies,
     limits: resolveLimits(recipe.limits, policy.baselineLimits)
   };

@@ -40,8 +40,13 @@ export function canonicalRequest(request: RecipeExecutionRequest): string {
     recipe: {
       key: request.recipe.key,
       version: request.recipe.version,
-      primaryModelId: request.recipe.primaryModelId,
-      fallbackModelId: request.recipe.fallbackModelId,
+      // No model ids. They used to be hashed because a recipe declared them;
+      // it no longer can, and their absence here is the same trade this file
+      // already makes for `limits`: the host's own configuration stays out of
+      // the fingerprint, so changing it does not invalidate every checkpoint at
+      // once and restart every in-flight run from turn zero with its budget
+      // already spent. A run that resumes on a newly configured model resumes
+      // from conversation state, which is model-independent.
       soul: request.recipe.soul,
       toolFamilies: request.recipe.toolFamilies,
       enabled: request.recipe.enabled,

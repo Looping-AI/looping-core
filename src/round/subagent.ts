@@ -83,8 +83,6 @@ export abstract class RecipeSubagentHost<
               "per-caller state on a path where none exists"
           );
         },
-        primaryModelId: config.model?.chatModelId ?? "",
-        fallbackModelId: config.model?.fallbackChatModelId ?? "",
         aiGatewayId: config.model?.aiGatewayId ?? ""
       }),
       env: this.env

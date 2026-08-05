@@ -166,8 +166,6 @@ export abstract class LoopingAgent<
       storage: this.ctx.storage,
       // A thunk, not a value — see `identityKey`.
       callerKey: () => this.requireIdentityKey(),
-      primaryModelId: model.chatModelId,
-      fallbackModelId: model.fallbackChatModelId,
       aiGatewayId: model.aiGatewayId
     };
   }
@@ -177,9 +175,9 @@ export abstract class LoopingAgent<
    * runtime exists.
    *
    * Deliberately not `this.config` — that would be a cycle. `resolveConfig` is
-   * cheap and pure and fills in core's defaults, so this is the same result the
-   * runtime lands on; that matters because a recipe's models are checked against
-   * `policy.modelAllowlist`, which is built from these very values.
+   * cheap and pure and fills in core's baseline, so this is the same result the
+   * runtime lands on; that matters because every recipe runs on exactly this
+   * pair — `RecipePolicy` carries it and `validateRecipe` stamps it on.
    */
   private resolvedModelIds(): CoreConfig["model"] {
     return resolveConfig(this.agentConfig()).model;
