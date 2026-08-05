@@ -93,7 +93,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "db:generate": "drizzle-kit generate && node scripts/build-migrations.mjs",
     "keys": "node scripts/generate-keys.mjs",
     "types": "wrangler types",

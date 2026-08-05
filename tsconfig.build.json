@@ -3,8 +3,22 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    // No `declarationMap` or `sourceMap`. A map's `sources` is `../src/*.ts`,
+    // which this package does not publish — `files` is `dist` (plus the eslint
+    // rules and the key generator), and adding `src` would drag every spec and
+    // its `vitest` / `cloudflare:test` imports into consumers' tarballs, which
+    // is the exact hazard `exclude` below exists to prevent.
+    //
+    // Dangling maps are not free. Every consumer's test run printed one
+    // "Sourcemap for … points to missing source files" per module it loaded,
+    // every run, for a source file that was never going to be there. They also
+    // shipped 144 files of the tarball's 294.
+    //
+    // Nothing is lost. The emitted `.d.ts` carries the full types and every doc
+    // comment, so go-to-definition still lands on the documentation — and in
+    // this repo the doc comments *are* the explanation, so that is the version
+    // worth landing on. A developer who wants the implementation has the
+    // checkout.
     "outDir": "./dist",
     "rootDir": "./src"
   },
