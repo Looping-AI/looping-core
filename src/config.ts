@@ -14,11 +14,29 @@
 
 /** Model ids and per-call generation settings. */
 export interface ModelConfig {
-  /** Workers AI model for the tool loop. Must support function calling. */
+  /**
+   * Workers AI model for the tool loop. Must support function calling.
+   *
+   * **Required — core ships no default.** Which model an agent runs on is the
+   * single most consequential thing about it: it sets the cost of every turn,
+   * the tool-calling reliability the whole control-tool design rests on, and the
+   * failure modes the fallback exists to escape. A default here would be core
+   * making that choice on a consumer's behalf, silently, and being wrong for
+   * most of them — the same reason core ships no prompt copy.
+   *
+   * It is also the value most likely to age badly. A model id baked into a
+   * published package survives every deprecation until someone bumps the
+   * package; one written in the agent that uses it is read by whoever owns the
+   * bill.
+   */
   chatModelId: string;
   /**
-   * Tried when the primary throws. Should be a *different vendor and family* —
-   * a same-family fallback shares the failure mode you are falling back from.
+   * Tried when the primary throws. **Required — core ships no default.**
+   *
+   * Should be a *different vendor and family* — a same-family fallback shares
+   * the failure mode you are falling back from, which makes it a retry wearing
+   * a costume. Core cannot pick this for you precisely because it depends on
+   * what you chose as primary.
    */
   fallbackChatModelId: string;
   /** AI Gateway slug; `"default"` auto-provisions on first request. */
@@ -122,15 +140,34 @@ export interface CoreConfig {
   session: SessionConfig;
 }
 
+/** The two ids an agent must choose for itself. Core has no opinion. */
+export type RequiredModelIds = Pick<
+  ModelConfig,
+  "chatModelId" | "fallbackChatModelId"
+>;
+
+/**
+ * The baseline, which is everything core *does* still have an opinion about.
+ *
+ * Note what is missing: the model pair. This type is `CoreConfig` minus those
+ * two ids precisely so that no value of it can supply them — a default nobody
+ * declared is how an agent ends up billing a model its author never chose.
+ */
+export type CoreConfigBaseline = Omit<CoreConfig, "model"> & {
+  model: Omit<ModelConfig, keyof RequiredModelIds>;
+};
+
 /**
  * A working baseline. Every value is overridable; none is a ceiling. These are
  * the values both predecessor agents converged on in production, so they are a
  * reasonable place to start rather than an opinion about your domain.
+ *
+ * **It carries no model ids.** See {@link ModelConfig.chatModelId}.
  */
-export const DEFAULT_CORE_CONFIG: CoreConfig = {
+export const DEFAULT_CORE_CONFIG: CoreConfigBaseline = {
   model: {
-    chatModelId: "@cf/zai-org/glm-5.2",
-    fallbackChatModelId: "@cf/moonshotai/kimi-k2.7-code",
+    // Not a model: an AI Gateway slug, and `"default"` is Cloudflare's own
+    // auto-provision behaviour rather than a choice core is making for anyone.
     aiGatewayId: "default",
     maxOutputTokens: 16_384,
     reasoningEffort: "medium"
@@ -149,11 +186,21 @@ export const DEFAULT_CORE_CONFIG: CoreConfig = {
   }
 };
 
-/** One level of optionality per nested group — enough for a config this shallow. */
+/**
+ * One level of optionality per nested group — enough for a config this shallow.
+ *
+ * `model` is the exception, and deliberately not optional: an agent must name
+ * its own primary and fallback. That is a compile error rather than a runtime
+ * one, so the omission is found while writing the agent rather than on the first
+ * request it serves.
+ */
 export type CoreConfigOverrides = {
-  [K in keyof CoreConfig]?: CoreConfig[K] extends object
+  [K in Exclude<keyof CoreConfig, "model">]?: CoreConfig[K] extends object
     ? Partial<CoreConfig[K]>
     : CoreConfig[K];
+} & {
+  /** Required: the two model ids, plus any generation setting you want changed. */
+  model: RequiredModelIds & Partial<Omit<ModelConfig, keyof RequiredModelIds>>;
 };
 
 export class ConfigError extends Error {
@@ -171,7 +218,7 @@ export class ConfigError extends Error {
  * not call it per-request: the point of resolving is that every module downstream
  * reads the same object.
  */
-export function resolveConfig(overrides: CoreConfigOverrides = {}): CoreConfig {
+export function resolveConfig(overrides: CoreConfigOverrides): CoreConfig {
   const config: CoreConfig = {
     model: { ...DEFAULT_CORE_CONFIG.model, ...overrides.model },
     mainAgentLimits: {
@@ -193,6 +240,33 @@ export function resolveConfig(overrides: CoreConfigOverrides = {}): CoreConfig {
       throw new ConfigError(`${name} must be a positive number, got ${value}`);
     }
   };
+
+  // The type already requires both ids; this catches the JavaScript consumer,
+  // the `as CoreConfigOverrides` cast, and the empty string — which typechecks
+  // and then reaches Workers AI as a model that does not exist, failing on the
+  // first generation with a binding error that names nothing useful.
+  const modelId = (value: string, name: string): void => {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new ConfigError(
+        `model.${name} is required and must be a non-empty model id — core ` +
+          `ships no default, because which model an agent runs on is the agent's ` +
+          `most consequential choice and cannot be made on its behalf`
+      );
+    }
+  };
+
+  modelId(config.model.chatModelId, "chatModelId");
+  modelId(config.model.fallbackChatModelId, "fallbackChatModelId");
+
+  // A fallback identical to the primary is a retry wearing a costume: it shares
+  // the outage, the rate limit and the deprecation you are falling back from.
+  if (config.model.chatModelId === config.model.fallbackChatModelId) {
+    throw new ConfigError(
+      `model.fallbackChatModelId must differ from model.chatModelId (both are ` +
+        `'${config.model.chatModelId}') — a same-model fallback shares every ` +
+        `failure mode you are falling back from`
+    );
+  }
 
   positive(config.mainAgentLimits.maxTurns, "mainAgentLimits.maxTurns");
   positive(config.mainAgentLimits.maxWallMs, "mainAgentLimits.maxWallMs");

@@ -126,7 +126,11 @@ export interface AgentRuntime {
 
 export interface CreateAgentRuntimeOptions {
   plugins: readonly AgentPlugin[];
-  config?: CoreConfigOverrides;
+  /**
+   * Required, because {@link CoreConfigOverrides} requires a model pair and core
+   * ships no default for it. Everything else in it stays optional.
+   */
+  config: CoreConfigOverrides;
   /**
    * Verify that every secret and binding the plugins declared is actually
    * present, given the Worker `env`. Off by default because core cannot know

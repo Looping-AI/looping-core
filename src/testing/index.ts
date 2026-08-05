@@ -43,6 +43,7 @@ export {
   GATEWAY_ORIGIN,
   TEST_AGENT_PRIVATE_JWK,
   TEST_GATEWAY_PRIVATE_JWK,
+  TEST_MODELS,
   gatewayPublicJwks,
   testAgentMessage,
   testStatus,
@@ -50,3 +51,11 @@ export {
 } from "./fixtures.js";
 
 export { doStorage, makeDoHelpers, type DoTestHelpers } from "./do.js";
+
+export {
+  createAgentHarness,
+  type AgentHarness,
+  type AgentHarnessOptions,
+  type CapturedCallback,
+  type HarnessWorker
+} from "./harness.js";

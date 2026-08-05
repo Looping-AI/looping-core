@@ -147,39 +147,71 @@ wildcard.
 > interoperate across this change in either direction, so they deploy together and
 > registered agents are re-registered.
 
-### 3. Build the runtime in your Durable Object
+### 3. Write your Durable Object
 
-Everything that would otherwise be a module-level constant is resolved once per DO
-instance, from your config and your installed plugins:
+`LoopingAgent` is the DO body every agent has: the runtime and database built once
+per instance, one continuous Session per verified caller, the gateway callback
+channel, and the task lifecycle a Workflow drives. Three seams are yours.
 
 ```ts
-import { Agent } from "agents";
-import { createAgentRuntime } from "@loopingai/core";
-import { AgentDB } from "@loopingai/core/db";
+import { LoopingAgent, type PluginHost } from "@loopingai/core/host";
 
-export class MyAgent extends Agent<Env> {
-  runtime!: ReturnType<typeof createAgentRuntime>;
-  db!: AgentDB;
-
-  async onStart() {
-    this.runtime = createAgentRuntime({
-      config: { model: { chatModelId: "@cf/zai-org/glm-5.2" } },
-      plugins: [scraper({ apiKey: this.env.SCRAPER_API_KEY })],
-      env: this.env // opt in to verifying every plugin's declared bindings exist
-    });
-
-    this.db = new AgentDB(this.ctx.storage, {
-      maxSubtasks: this.runtime.config.maxSubtasks,
-      stores: this.runtime.stores
-    });
-    await this.db.ensureReady();
+export class MyAgent extends LoopingAgent<Env> {
+  protected agentConfig() {
+    return {
+      model: {
+        chatModelId: "@cf/zai-org/glm-5.2",
+        fallbackChatModelId: "@cf/meta/llama-4-scout-17b-16e-instruct"
+      }
+    };
+  }
+  protected agentPlugins(host: PluginHost<Env>) {
+    return [scraper({ apiKey: host.env.SCRAPER_API_KEY })];
+  }
+  protected agentSoul(capabilities: string) {
+    return soulPrompt(capabilities);
   }
 }
 ```
 
-Resolving a registry at _import_ time is the one thing this package exists to
-prevent: it freezes the registry before `env` exists (which on Workers is always),
-defeats tree-shaking, and makes runtime plugin selection impossible.
+Everything that would otherwise be a module-level constant is resolved from those,
+once per instance. Resolving a registry at _import_ time is the one thing this
+package exists to prevent: it freezes the registry before `env` exists (which on
+Workers is always), defeats tree-shaking, and makes runtime plugin selection
+impossible.
+
+`createAgentRuntime` and `AgentDB` are still exported and still work on a bare
+`Agent<Env>` — but everything the base class does is lifecycle with an ordering
+that is load-bearing and invisible (migrations awaited before the first RPC, the
+guarded terminal write, the cancellation verdict that must be read and not
+probed for), and hand-rolling it is how two agents in one repo drift apart.
+
+### 4. Delegate, if your agent delegates
+
+`@loopingai/core/round` adds the other half: a durable Subtask DAG, wave
+scheduling, isolated subagent execution, and the round loop over them.
+
+```ts
+import { RoundAgentBase, type RoundPolicy } from "@loopingai/core/round";
+
+export class MyAgent extends RoundAgentBase<Env> {
+  // …the three seams above, plus:
+  protected roundPolicy(): RoundPolicy {
+    return policy;
+  }
+  protected subagentClass() {
+    return MySubagent;
+  }
+}
+```
+
+#### The round policy
+
+Core ships the machine and none of the words. `RoundPolicy` is every string the
+loop emits — the round contract the model is held to, the note appended when the
+budget is spent, and the three user-facing messages. Nothing has a default: a
+lent-out round contract is exactly the house prompt copy this package refuses to
+have.
 
 ---
 
@@ -194,6 +226,8 @@ not drag in the A2A adapter, and the test harness cannot reach a production bund
 | `@loopingai/core/a2a`          | card signing, JWKS, gateway-JWT verify, push notify, task store, executor   |
 | `@loopingai/core/worker`       | `createA2AWorker()` — the whole zero-trust edge                             |
 | `@loopingai/core/agent`        | session, history, model runtime, inference, budget, control tools           |
+| `@loopingai/core/host`         | `LoopingAgent` — the Durable Object body — and `PluginHost`                 |
+| `@loopingai/core/round`        | the delegating round loop: `RoundAgentBase`, `runHandleTask`, `runTurn`     |
 | `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool, wave scheduler        |
 | `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
 | `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
@@ -388,13 +422,34 @@ await withDb("accepts a turn once", async (db) => {
   (a scripted `LanguageModel`), so a loop can be driven with no model call at all.
 - **Fixtures** — Ed25519 keypairs and a gateway-JWT signer, so the zero-trust path is
   exercisable end to end without a real gateway.
+- **`createAgentHarness`** — the assembly of all of the above: send one A2A turn the
+  way a gateway does, and capture what comes back.
+
+  ```ts
+  const harness = createAgentHarness({ worker, env, tenant: "reactive" });
+  using _ = harness.interceptGateway();
+
+  const accepted = await harness.send("what's the weather?");
+  expect(accepted.status.state).toBe(TaskState.TASK_STATE_SUBMITTED);
+  ```
+
+  It exists because the pieces above were never the hard part. The audience is the
+  **endpoint**, not the origin; the tenant claim has to match the tenant in the
+  body; `SendMessage` is refused without a push config; and the gateway's JWKS has
+  to be reachable or every spec below it reports a 401 about something else. Four
+  facts, wrong the first time in every consumer that wrote this by hand.
 
 ---
 
 ## What core deliberately does _not_ contain
 
-- The turn loop, triage, and the DO / Workflow class bodies. Core ships the argument
-  and budget types; you write the loop.
+- **Prompt copy of any kind.** Not a soul, not a round contract, not a user-facing
+  failure message. `@loopingai/core/round` ships the whole delegating loop but takes
+  every word it says from a [`RoundPolicy`](#the-round-policy) you write, because a
+  run must never execute under an identity nobody chose.
+- **A loop you cannot replace.** `/round` is opt-in and its own subpath. An agent
+  whose turn is a single inference extends `LoopingAgent` directly, writes its own
+  loop, and carries none of the delegation machinery in its bundle.
 - The main agent's soul. Core ships no prompt copy.
 - Config _values_ — model ids, budgets, limits. Core ships the shapes and safe
   defaults, and `resolveConfig` validates your overrides.

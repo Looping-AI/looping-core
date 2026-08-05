@@ -6,6 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { TaskState } from "@a2a-js/sdk";
 import { AgentDB, PLUGIN_MIGRATIONS_TABLE } from "./db.js";
 import { makeDoHelpers, doStorage } from "../testing/do.js";
+import { buildCompletedTask } from "../a2a/notify.js";
 import type { PluginStore } from "./db.js";
 import type { TaskListQuery } from "./models/tasks.js";
 import type { SubtaskDraft } from "../subtasks/types.js";
@@ -134,6 +135,43 @@ describe("tasks", () => {
 
     expect(result.beforeCancel).toBe("ok");
     expect(result.afterCancel).toBe("canceled");
+  });
+
+  it("refuses to cancel a task that already completed", async () => {
+    // `complete` and `notify` are separate Workflow steps: a cancel landing
+    // between them must not flip an already-completed row to canceled, or
+    // `deliver()` posts its cached completed Task right after storage silently
+    // disagreed with it.
+    const result = await withDb("cancel-terminal", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      const completed = buildCompletedTask("t1", "c", "the answer");
+      const saved = db.tasks.save(completed);
+      const canceled = db.tasks.cancel("t1");
+      return { saved, canceled, task: db.tasks.get("t1") };
+    });
+
+    expect(result.saved).toBe(true);
+    expect(result.canceled).toBeNull();
+    expect(result.task?.status.state).toBe(TaskState.TASK_STATE_COMPLETED);
+  });
+
+  it("refuses to save a canceled task over one that already completed", async () => {
+    const result = await withDb("save-canceled-over-completed", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      db.tasks.save(buildCompletedTask("t1", "c", "the answer"));
+      const canceledTask = { ...db.tasks.get("t1")! };
+      canceledTask.status = {
+        ...canceledTask.status,
+        state: TaskState.TASK_STATE_CANCELED
+      };
+      const applied = db.tasks.save(canceledTask);
+      return { applied, task: db.tasks.get("t1") };
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.task?.status.state).toBe(TaskState.TASK_STATE_COMPLETED);
   });
 
   it("round-trips a task through the SDK's own JSON form", async () => {

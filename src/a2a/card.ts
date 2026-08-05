@@ -4,12 +4,19 @@ import {
   AgentCard,
   generateAgentCardSignature
 } from "@a2a-js/sdk";
+import {
+  A2A_JWS_ALG,
+  A2A_RPC_PATH,
+  endpointUrl
+} from "@loopingai/a2a-protocol";
 
-/** JWS algorithm for the card signature — must match the gateway (`EdDSA`). */
-const ALG = "EdDSA";
-
-/** The default JSON-RPC path an agent answers on (the card's only interface). */
-export const A2A_RPC_PATH = "/a2a";
+/**
+ * The card signature uses the one algorithm every Looping A2A signature uses,
+ * and the default RPC path is the one the gateway also knows. Both come from
+ * `@loopingai/a2a-protocol` — see {@link file://./verify.ts} for why that is a
+ * separate package rather than a constant declared on each side.
+ */
+export { A2A_RPC_PATH } from "@loopingai/a2a-protocol";
 
 /**
  * The transport-independent half of an {@link AgentCard} — everything that does
@@ -136,7 +143,12 @@ export function buildBaseCard(
     },
     supportedInterfaces: [
       {
-        url: `${opts.origin}${rpcPath}`,
+        // The gateway reads this URL off the card and mints `aud` from it with
+        // `audienceFor`; this Worker derives its expected audience the same
+        // way. `endpointUrl` is what makes those provably equal — the protocol
+        // package pins `audienceFor(endpointUrl(o, p)) === endpointUrl(o, p)`
+        // for every path, rather than leaving both sides to concatenate.
+        url: endpointUrl(opts.origin, rpcPath),
         protocolBinding: "JSONRPC",
         protocolVersion: A2A_PROTOCOL_VERSION,
         tenant: opts.tenant ?? ""
@@ -186,7 +198,7 @@ export async function signCard(
   cfg: CardSigningConfig
 ): Promise<WireAgentCard> {
   const sign = generateAgentCardSignature(cfg.privateJwk, {
-    alg: ALG,
+    alg: A2A_JWS_ALG,
     kid: cfg.privateJwk.kid,
     typ: "JOSE",
     jku: cfg.jku
@@ -256,5 +268,5 @@ export function publicCardJwks(privateJwk: JWK & { kid: string }): {
 } {
   const { d: _d, ...pub } = privateJwk;
   void _d;
-  return { keys: [{ ...pub, use: "sig", alg: ALG }] };
+  return { keys: [{ ...pub, use: "sig", alg: A2A_JWS_ALG }] };
 }

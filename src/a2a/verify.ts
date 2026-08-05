@@ -5,6 +5,12 @@ import {
   jwtVerify,
   type JWTPayload
 } from "jose";
+import {
+  A2A_JWS_ALG,
+  readIdentityClaim,
+  readTenantClaim,
+  type GatewayIdentity
+} from "@loopingai/a2a-protocol";
 
 /**
  * Verify the gateway identity JWT (the "B authenticates A" half of zero-trust).
@@ -26,54 +32,25 @@ import {
  * gateway instead.
  */
 
-/** Algorithm the gateway signs with — reject anything else. */
-const ALG = "EdDSA";
-
 /**
- * Default namespaced claim carrying the minimal caller identity.
+ * The wire contract — claim names, algorithm, identity shape — comes from
+ * `@loopingai/a2a-protocol`, which the gateway also depends on directly.
  *
- * Overridable via {@link VerifyOptions.identityClaim} for a deployment that
- * isn't behind looping-gateway; the default is the Looping namespace so an
- * agent built on this package needs no configuration to interoperate.
- */
-export const IDENTITY_CLAIM = "https://loopingai.org/identity";
-
-/**
- * Default namespaced claim naming the **tenant** the gateway minted this token
- * for — which of the agents on this origin it authorizes the call to reach.
+ * It used to be declared here and again in the gateway, each with a comment
+ * saying it must match the other, because the gateway is not an agent and must
+ * not import this package. That failed exactly as it always does: one side
+ * moved to the `loopingai.org` namespace while the other still minted
+ * `https://looping.ai/tenant`, verification read an empty tenant, and every
+ * request 401'd with both builds green.
  *
- * Several agents share one endpoint, so they also share an `aud`: the audience
- * proves the token was minted for *this deployment*, and can say nothing about
- * which agent on it. This claim is the only thing that can, which is why the
- * Worker refuses a token that omits it rather than falling back to a default.
- * Without it `tenant` would be an unauthenticated field in the request body,
- * and a token legitimately issued for one agent could be replayed against any
- * of its siblings.
+ * Re-exported below so nothing downstream of `@loopingai/core/a2a` has to know
+ * the split happened — an agent still imports these from here.
  */
-export const TENANT_CLAIM = "https://loopingai.org/tenant";
-
-/**
- * The gateway-agent instance identity forwarded by the gateway — i.e. which
- * registered agent instance dispatched this call, not the human end user.
- * Mirrors `RemoteIdentity` in looping-gateway's `src/auth/agent-jwt.ts`.
- *
- * Any end user travels unverified, inline in the message text; the gateway
- * deliberately excludes it from this signed claim so a remote agent cannot read
- * the full caller auth context. Every field is optional because the claim is
- * whatever the issuer put there — {@link GatewayIdentity.key} is the only one
- * anything downstream depends on, and a caller without it is rejected before a
- * DO is ever addressed.
- */
-export interface GatewayIdentity {
-  /** Canonical instance key, e.g. `custom:7:analytics`. */
-  key?: string;
-  /** Registry name of the logical agent instance. */
-  name?: string;
-  /** Dispatch kind of the caller (`"custom"` for remote agents). */
-  kind?: string;
-  /** Workspace the calling agent instance belongs to. */
-  workspaceId?: number | null;
-}
+export {
+  IDENTITY_CLAIM,
+  TENANT_CLAIM,
+  type GatewayIdentity
+} from "@loopingai/a2a-protocol";
 
 /** Thrown when a gateway token is missing or fails verification. */
 export class GatewayAuthError extends Error {
@@ -187,15 +164,17 @@ export async function verifyGatewayToken(
     const { payload } = await jwtVerify(token, jwksFor(jku), {
       issuer: allowedOrigins,
       audience: opts.audience,
-      algorithms: [ALG]
+      algorithms: [A2A_JWS_ALG]
     });
-    const claim = opts.identityClaim ?? IDENTITY_CLAIM;
-    const identity = (payload[claim] as GatewayIdentity | undefined) ?? {};
-    const tenant = payload[opts.tenantClaim ?? TENANT_CLAIM];
+    // Read through the protocol package's readers rather than indexing the
+    // payload here: they are where "an absent or malformed claim yields an
+    // empty value, never a default" has its single implementation, and the
+    // emptiness is load-bearing — `createA2AWorker` compares the tenant against
+    // the one the request body addressed, and `""` matches none of them.
     return {
       payload,
-      identity,
-      tenant: typeof tenant === "string" ? tenant : ""
+      identity: readIdentityClaim(payload, opts.identityClaim),
+      tenant: readTenantClaim(payload, opts.tenantClaim)
     };
   } catch (err) {
     if (err instanceof GatewayAuthError) throw err;

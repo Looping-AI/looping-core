@@ -1,6 +1,10 @@
 import { SignJWT, type JWK } from "jose";
 import { TaskState, type Task } from "@a2a-js/sdk";
 import { V1PushNotificationSerializer } from "@a2a-js/sdk/server";
+import {
+  A2A_JWS_ALG,
+  NOTIFICATION_TOKEN_HEADER
+} from "@loopingai/a2a-protocol";
 import { agentTextMessage } from "./parts.js";
 import type { PlainTask } from "./task.js";
 
@@ -20,16 +24,20 @@ import type { PlainTask } from "./task.js";
  * boundary; only our public key is ever used to verify.
  */
 
-/** JWS algorithm — must match the card + gateway (`EdDSA`). */
-const ALG = "EdDSA";
-
 /**
- * Header carrying the per-task validation `token` the gateway set in the
- * `taskPushNotificationConfig`. Echoed verbatim so the gateway can correlate the
- * callback to its pending task row. Must match looping-gateway's
- * `NOTIFICATION_TOKEN_HEADER` (`src/a2a/notifications/remote.ts`).
+ * The two shared values on this hop — the signature algorithm and the header
+ * carrying the per-task validation `token` — come from
+ * `@loopingai/a2a-protocol`, the same package the gateway reads them from.
+ *
+ * The header used to be declared here and again in looping-gateway, each with a
+ * comment naming the other file. It is a slightly different case from the claim
+ * names: the value is `@a2a-js/sdk`'s own default for `tokenHeaderName`, not
+ * Looping's choice, but the SDK never *exports* it — it exists only as an
+ * inline fallback — so neither side could import it and both wrote it down.
+ *
+ * Re-exported so `@loopingai/core/a2a` keeps being where an agent finds it.
  */
-export const NOTIFICATION_TOKEN_HEADER = "x-a2a-notification-token";
+export { NOTIFICATION_TOKEN_HEADER } from "@loopingai/a2a-protocol";
 
 /**
  * Callback-JWT lifetime. The gateway enforces `maxTokenAge: 10m` with a 60s clock
@@ -206,7 +214,11 @@ export async function signCallbackJwt(
   opts: { jku: string; aud: string }
 ): Promise<string> {
   return new SignJWT({})
-    .setProtectedHeader({ alg: ALG, kid: privateJwk.kid, jku: opts.jku })
+    .setProtectedHeader({
+      alg: A2A_JWS_ALG,
+      kid: privateJwk.kid,
+      jku: opts.jku
+    })
     .setAudience(opts.aud)
     .setIssuedAt()
     .setExpirationTime(CALLBACK_TOKEN_TTL)

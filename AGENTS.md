@@ -102,6 +102,45 @@ cannot strand in-flight runs.
 
 ---
 
+## The line core does not cross
+
+The old rule was "core ships no loop." That was the right instinct at the wrong
+granularity, and 0.4.0 sharpens it: **core ships no prompt copy and no policy.**
+
+`@loopingai/core/round` now ships the whole delegating loop — the DAG wave
+scheduler, chunked subagent execution, cancellation ordering, the
+primary→fallback→repair ladder. Keeping that out of core did not make agents more
+expressive; it made every consumer fork ~2,700 lines of durable-execution logic
+they could not receive fixes for. The starter's own two agents, written against a
+documented invariant by people who knew it, still drifted apart: the second copy
+discarded `markWorking`'s cancellation verdict and probed with `getTask` before
+writing a terminal Task, so a canceled task burned a model call and could still
+produce a `completed` callback.
+
+What is genuinely per-agent is now explicit and mandatory:
+
+- **`RoundPolicy`** — the round contract, the budget-spent note, and the three
+  user-facing strings. Nothing has a default. A lent-out round contract is exactly
+  the house prompt copy `validateRecipe` already refuses for a subagent soul.
+- **The loop itself, if you want a different one.** `/round` is opt-in and its own
+  subpath. An agent whose turn is a single inference extends `LoopingAgent` from
+  `/host`, writes its own loop, and carries none of the delegation machinery.
+
+So when adding to `/round` or `/host`, the test is not "does an agent vary here"
+but "**could an agent vary here and still be correct**". A cancellation ordering
+cannot. A sentence the model reads always can.
+
+Two consequences for exports:
+
+- `/round` must **never** be re-exported from the root barrel, or a non-delegating
+  agent pays for a scheduler it never calls. `verify:isolation` in the starter
+  asserts the proactive agent's graph is free of `core/dist/round/`.
+- `/host` is separate from `/agent` for the same reason: `/agent` is loop
+  primitives, and a loop module should not drag a Durable Object base class and
+  drizzle into its graph.
+
+---
+
 ## Working here
 
 ```bash

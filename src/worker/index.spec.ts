@@ -3,12 +3,15 @@ import {
   AGENT_CARD_PATH,
   A2A_PROTOCOL_VERSION,
   AgentCard,
-  verifyAgentCardSignature
+  verifyAgentCardSignature,
+  type Task
 } from "@a2a-js/sdk";
-import { createA2AWorker, JWKS_PATH } from "./index.js";
+import { createA2AWorker, defineAgent, JWKS_PATH } from "./index.js";
 import type { AgentManifest } from "../a2a/card.js";
 import type { A2ASecretsEnv } from "../env.js";
-import type { AgentResolver } from "../a2a/agent-stub.js";
+import type { AgentResolver, TaskAgent } from "../a2a/agent-stub.js";
+import type { AcceptedTurn } from "../a2a/executor.js";
+import type { PlainTask } from "../a2a/task.js";
 import { makeGatewayToken, TEST_TENANT } from "../testing/auth.js";
 import {
   AGENT_ORIGIN,
@@ -58,6 +61,32 @@ const tenantAgent = (name: string) => ({
   resolveAgent,
   startTurn: async () => {}
 });
+
+/**
+ * An `Env` shaped like a real one, for the `defineAgent` specs.
+ *
+ * The namespace is over a class carrying the task lifecycle, because that is the
+ * contract: `createA2AWorker` builds a `DurableTaskStore` over whatever
+ * `resolveAgent` returns, so a Durable Object without these four methods is not
+ * mountable — and the compiler is where that is caught. Nothing here is called;
+ * these specs are about what is refused at construction.
+ */
+declare class SpecAgent implements TaskAgent {
+  __DURABLE_OBJECT_BRAND: never;
+  beginTask(input: {
+    messageId: string;
+    taskId: string;
+    contextId: string;
+  }): Promise<PlainTask>;
+  getTask(taskId: string): Promise<PlainTask | null>;
+  saveTask(task: Task): Promise<boolean>;
+  cancelTask(taskId: string): Promise<PlainTask | null>;
+}
+
+interface TestEnv extends A2ASecretsEnv {
+  AGENT_DO: DurableObjectNamespace<SpecAgent>;
+  TURN_WORKFLOW: Workflow<AcceptedTurn>;
+}
 
 const worker = createA2AWorker({
   manifest: hostManifest,
@@ -238,7 +267,33 @@ describe("startup validation", () => {
   it("refuses an empty registry", () => {
     expect(() =>
       createA2AWorker({ manifest: hostManifest, tenants: {} })
-    ).toThrow(/at least one tenant/);
+    ).toThrow(/at least one agent/);
+  });
+
+  it("refuses a registry with neither `agents` nor `tenants`", () => {
+    expect(() => createA2AWorker({ manifest: hostManifest })).toThrow(
+      /at least one agent/
+    );
+  });
+
+  it("refuses a tenant declared by both `agents` and `tenants`", () => {
+    // Letting one win silently is how a deployment ends up serving an agent
+    // nobody meant to mount — and which one wins would be an implementation
+    // detail of a merge order, invisible at the call site.
+    expect(() =>
+      createA2AWorker({
+        manifest: hostManifest,
+        tenants: { twice: tenantAgent("twice") },
+        agents: [
+          defineAgent({
+            tenant: "twice",
+            manifest: hostManifest,
+            agent: (env: TestEnv) => env.AGENT_DO,
+            workflow: (env: TestEnv) => env.TURN_WORKFLOW
+          })
+        ]
+      })
+    ).toThrow(/declare each agent once/);
   });
 
   it("refuses a tenant registered under the empty id", () => {

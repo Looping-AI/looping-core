@@ -1,11 +1,22 @@
 /**
  * `@loopingai/core/agent` — the primitives a loop is built from.
  *
- * Core ships no loop. `turn.ts` / `loop.ts` are the agent's, because how a round
- * ends is the one thing every agent genuinely differs on. What core owns is
- * everything both predecessor loops needed identically: the session, the model
- * pair with its fallback, the budget, and the control-tool abstraction that
- * turns "the model called something that ends the round" into a checked value.
+ * The session, the model pair with its fallback, the budget, and the
+ * control-tool abstraction that turns "the model called something that ends the
+ * round" into a checked value. Everything both predecessor loops needed
+ * identically, and nothing about how a round is shaped.
+ *
+ * This subpath ships **no loop** — that is what makes it importable by one. A
+ * loop module needs these primitives without also pulling in a Durable Object
+ * base class and drizzle, which is why `LoopingAgent` lives in
+ * `@loopingai/core/host` and the delegating round loop in
+ * `@loopingai/core/round`.
+ *
+ * Core as a whole *does* now ship a loop, opt-in, in `/round`. The rule it
+ * still keeps is narrower and better: **core ships no prompt copy and no
+ * policy** — see `AGENTS.md`, "The line core does not cross". An agent that
+ * wants a different round shape imports none of `/round` and builds it from
+ * exactly what is here.
  */
 
 export { newTurnBudget, stepAllowance, type TurnBudget } from "./budget.js";

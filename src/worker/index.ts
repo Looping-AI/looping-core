@@ -5,6 +5,7 @@ import {
   validateVersion
 } from "@a2a-js/sdk/server";
 import { RequestMalformedError, toJsonRpcError } from "@a2a-js/sdk/errors";
+import { JWKS_PATH, endpointUrl } from "@loopingai/a2a-protocol";
 import {
   A2A_RPC_PATH,
   buildBaseCard,
@@ -25,6 +26,7 @@ import { A2AExecutor, type TurnStarter } from "../a2a/executor.js";
 import { DurableTaskStore } from "../a2a/task-store.js";
 import type { AgentResolver } from "../a2a/agent-stub.js";
 import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
+import type { MountedAgent } from "./define-agent.js";
 
 /**
  * The A2A Worker: the zero-trust, no-shared-secrets edge every Looping agent
@@ -78,8 +80,23 @@ import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
  * routing hint in the request body.
  */
 
-/** Default path serving the card-signing public JWKS (the card's `jku`). */
-export const JWKS_PATH = "/.well-known/jwks.json";
+export {
+  defineAgent,
+  type AgentDefinition,
+  type DefineAgentOptions,
+  type MountedAgent
+} from "./define-agent.js";
+
+/**
+ * Default path serving the card-signing public JWKS (the card's `jku`).
+ *
+ * From `@loopingai/a2a-protocol`, because the gateway serves its own JWKS at
+ * the same path and fetches ours from whatever `jku` says — see
+ * {@link file://../a2a/verify.ts} for why the two sides share a package rather
+ * than a comment. Re-exported so this stays importable from
+ * `@loopingai/core/worker`, where it has always lived.
+ */
+export { JWKS_PATH } from "@loopingai/a2a-protocol";
 
 /** The JSON-RPC method carrying a turn (v1.0 renamed v0.3's `message/send`). */
 const SEND_MESSAGE_METHOD = "SendMessage";
@@ -119,7 +136,7 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    */
   manifest: AgentManifest;
   /**
-   * The agents on this origin, keyed by tenant id. At least one.
+   * The agents on this origin, keyed by tenant id.
    *
    * The id is opaque to the protocol — "an opaque string used for routing
    * requests to a specific agent or tenant when multiple agents are served
@@ -129,8 +146,23 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    * The tenant chooses *which agent*; the verified `identity.key` still chooses
    * *which instance of it*, so two callers of one tenant stay in separate
    * Durable Objects exactly as before.
+   *
+   * The escape hatch, and still fully supported: use it for an agent whose
+   * routing or turn-start is genuinely its own. {@link A2AWorkerOptions.agents}
+   * is the shorter form for the ordinary case. Supply at least one of the two.
    */
-  tenants: Record<string, TenantAgent>;
+  tenants?: Record<string, TenantAgent>;
+  /**
+   * The agents on this origin, each declared once with
+   * {@link file://./define-agent.ts defineAgent}.
+   *
+   * Prefer this to {@link A2AWorkerOptions.tenants}: one declaration produces the
+   * tenant entry here *and* the resolver the agent's Workflow entrypoint uses, so
+   * the two cannot drift, and the binding names are type-constrained to bindings
+   * of the right kind. Merged over `tenants`, which is checked for duplicate
+   * tenant ids rather than silently overriding.
+   */
+  agents?: readonly MountedAgent<TEnv>[];
   /** Path serving the public JWKS. Defaults to {@link JWKS_PATH}. */
   jwksPath?: string;
   /** Path this agent answers JSON-RPC on. Defaults to `/a2a`. */
@@ -312,14 +344,52 @@ export function createA2AWorker<TEnv extends object>(
 export function createA2AWorker<TEnv extends object>(
   options: A2AWorkerOptions<TEnv>
 ): (request: Request, env: TEnv) => Promise<Response> {
-  const jwksPath = options.jwksPath ?? JWKS_PATH;
-  const rpcPath = options.rpcPath ?? A2A_RPC_PATH;
+  // Normalized once, here, because each of these is used for two things that
+  // must agree: routing compares it against `url.pathname`, and `endpointUrl`
+  // composes it into the card's interface URL and the expected audience. A
+  // configured path written without its leading slash used to satisfy neither —
+  // `url.pathname` always has one, so the route simply never matched, and the
+  // audience came out as `https://hostpath`. Normalizing at the split keeps the
+  // two derivations from disagreeing whichever way it is written.
+  const withSlash = (path: string) =>
+    path.startsWith("/") ? path : `/${path}`;
+  const jwksPath = withSlash(options.jwksPath ?? JWKS_PATH);
+  const rpcPath = withSlash(options.rpcPath ?? A2A_RPC_PATH);
   const requirePushConfig = options.requirePushConfig ?? true;
+  const declared = options.tenants ?? {};
+  const defined = options.agents ?? [];
+  // A tenant declared both ways is ambiguous, and silently letting one win is how
+  // a deployment serves an agent nobody meant to mount. Caught at startup.
+  const duplicate = defined.find((a) => Object.hasOwn(declared, a.tenant));
+  if (duplicate) {
+    throw new Error(
+      `createA2AWorker got tenant '${duplicate.tenant}' from both \`agents\` and ` +
+        "`tenants` — declare each agent once"
+    );
+  }
+  // …and the same ambiguity within `agents` alone, which the check above cannot
+  // see. `definedByTenant` below is a `Map`, so a repeated id silently keeps the
+  // *last* entry: two `defineAgent` calls sharing a tenant would mount one and
+  // discard the other with no signal anywhere. That is the identical failure the
+  // cross-check exists to prevent, reached by copy-pasting a declaration rather
+  // than by mixing the two forms — which is the likelier mistake of the two.
+  const seen = new Set<string>();
+  for (const agent of defined) {
+    if (seen.has(agent.tenant)) {
+      throw new Error(
+        `createA2AWorker got tenant '${agent.tenant}' twice in \`agents\` — ` +
+          "declare each agent once"
+      );
+    }
+    seen.add(agent.tenant);
+  }
   // Nothing can be served without at least one agent, and a deployment that
   // configured none is a startup mistake rather than a per-request one.
-  const tenantIds = Object.keys(options.tenants);
+  const tenantIds = [...Object.keys(declared), ...defined.map((a) => a.tenant)];
   if (tenantIds.length === 0) {
-    throw new Error("createA2AWorker requires at least one tenant");
+    throw new Error(
+      "createA2AWorker requires at least one agent — pass `agents` or `tenants`"
+    );
   }
   // …and one registered under `""` is the same mistake wearing a disguise. A
   // request must name a tenant, and the empty string is how "named none" is
@@ -333,14 +403,28 @@ export function createA2AWorker<TEnv extends object>(
         "names its tenant, so an agent registered under '' can never be reached"
     );
   }
+  const definedByTenant = new Map(defined.map((a) => [a.tenant, a]));
   // The tenant id is caller-controlled, so the lookup is by *own* property.
   // Plain indexing reaches `Object.prototype`, and every inherited name —
   // `toString`, `constructor`, `__proto__` — comes back truthy, so a tenant
   // called one of those slips past an `if (!agent)` guard and only fails later
   // when a function is read off it. That is a 500 where the whole point of the
-  // guard is a 400 naming the unknown tenant.
-  const tenantAgent = (id: string): TenantAgent | undefined =>
-    Object.hasOwn(options.tenants, id) ? options.tenants[id] : undefined;
+  // guard is a 400 naming the unknown tenant. (A `Map` has no such inheritance,
+  // so the `agents` half needs no equivalent guard.)
+  //
+  // Takes `env` because a `defineAgent` entry resolves its bindings from it —
+  // there is no `env` at module scope on Workers, so the closure is built per
+  // request rather than at construction.
+  const tenantAgent = (env: TEnv, id: string): TenantAgent | undefined => {
+    if (Object.hasOwn(declared, id)) return declared[id];
+    const agent = definedByTenant.get(id);
+    if (!agent) return undefined;
+    return {
+      manifest: agent.manifest,
+      resolveAgent: (identity) => agent.resolveAgent(env, identity),
+      startTurn: (turn) => agent.startTurn(env, turn)
+    };
+  };
   // Only reachable through the first overload, which has already established
   // that `TEnv` carries the two documented names.
   const readSecrets =
@@ -360,9 +444,9 @@ export function createA2AWorker<TEnv extends object>(
     const audience =
       typeof options.audience === "function"
         ? options.audience(url)
-        : (options.audience ?? `${origin}${rpcPath}`);
+        : (options.audience ?? endpointUrl(origin, rpcPath));
     const privateJwk = parsePrivateJwk(secrets.signingKey);
-    const signing = { privateJwk, jku: `${origin}${jwksPath}` };
+    const signing = { privateJwk, jku: endpointUrl(origin, jwksPath) };
     const cardFor = (manifest: AgentManifest, tenant?: string) =>
       buildBaseCard(manifest, {
         origin,
@@ -470,7 +554,7 @@ export function createA2AWorker<TEnv extends object>(
         );
       }
 
-      const agent = tenantAgent(requestedTenant);
+      const agent = tenantAgent(env, requestedTenant);
       if (!agent) {
         return jsonRpcErrorResponse(
           body,
@@ -535,7 +619,7 @@ export function createA2AWorker<TEnv extends object>(
         // already authorized and routed on.
         async (ctx) => {
           const requested = ctx.tenant ?? "";
-          const target = tenantAgent(requested);
+          const target = tenantAgent(env, requested);
           if (!target) {
             throw new RequestMalformedError(`unknown tenant '${requested}'`);
           }
