@@ -11,7 +11,12 @@
  *   2. No relative import in `dist/` omits its `.js` extension (Node ESM throws
  *      `ERR_MODULE_NOT_FOUND` on those; `moduleResolution: "Bundler"` does not).
  *   3. No spec files reached `dist/`.
- *   4. Realm isolation: no *runtime* subpath can reach `node:*`, `undici`,
+ *   4. No source maps reached `dist/`. Their `sources` is `../src/*.ts`, which
+ *      is not published, so every one is dangling — and a consumer's test runner
+ *      prints "Sourcemap for … points to missing source files" once per module
+ *      it loads, every run. `build` cleans `dist/` first, so this also catches
+ *      the stale-artifact case that made the original defect survive a rebuild.
+ *   5. Realm isolation: no *runtime* subpath can reach `node:*`, `undici`,
  *      `cloudflare:test` or `vitest` through any depth of relative import.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -73,11 +78,18 @@ for (const [subpath, value] of Object.entries(pkg.exports ?? {})) {
   if (runtime?.endsWith(".js")) subpathEntries.push([subpath, runtime]);
 }
 
-// --- 2 & 3. what reached dist/ ----------------------------------------------
+// --- 2, 3 & 4. what reached dist/ -------------------------------------------
 
 for (const file of walk(path.join(root, "dist"))) {
   if (/\.spec\.(js|d\.ts)$/.test(file)) {
     fail(`spec file shipped to dist: ${path.relative(root, file)}`);
+  }
+  if (file.endsWith(".map")) {
+    fail(
+      `source map shipped to dist: ${path.relative(root, file)} — its sources ` +
+        `are under src/, which this package does not publish, so it dangles at ` +
+        `every consumer`
+    );
   }
   if (!file.endsWith(".js")) continue;
   for (const spec of relativeImports(readFileSync(file, "utf8"))) {
@@ -90,7 +102,7 @@ for (const file of walk(path.join(root, "dist"))) {
   }
 }
 
-// --- 4. realm isolation ------------------------------------------------------
+// --- 5. realm isolation ------------------------------------------------------
 
 for (const [subpath, target] of subpathEntries) {
   // `/testing*` is the test harness and is expected to reach these; it is a
