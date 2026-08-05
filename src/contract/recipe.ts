@@ -82,8 +82,30 @@ export type RecipeLimits = AgentLimits;
 export interface ResolvedRecipe {
   key: string;
   version: number;
-  primaryModelId: string;
-  fallbackModelId: string;
+  /**
+   * Which model to run this recipe's turns on — **omit to inherit the host's**.
+   *
+   * Optional because that is what "no preference" honestly is: absence, not an
+   * empty string. A published plugin generally cannot name a model at all. It
+   * has no idea what its host is billed for, and an id frozen into a package
+   * outlives every deprecation until someone bumps it — the same argument that
+   * removed core's own model defaults.
+   *
+   * Naming one is a *preference*, not a demand: {@link validateRecipe}
+   * substitutes the host's configured model for any id outside its allowlist.
+   * Pass one only to deliberately run a recipe somewhere other than the agent's
+   * chat model — a long sequence of cheap decisions is not the same workload as
+   * conversation.
+   *
+   * {@link ValidatedRecipe} narrows both of these back to required, so a model
+   * id can only be *read* off a recipe that has been through validation. That is
+   * the point of the optionality: `recipe.primaryModelId` on an unvalidated
+   * recipe is `string | undefined` and fails to compile where a model is
+   * expected, instead of reaching Workers AI as `""` and failing on the call.
+   */
+  primaryModelId?: string;
+  /** Tried when the primary throws. Omit to inherit — see {@link primaryModelId}. */
+  fallbackModelId?: string;
   /** Required, never defaulted — see `validateRecipe`. */
   soul: string;
   toolFamilies: string[];
@@ -111,6 +133,17 @@ export interface ResolvedRecipe {
  */
 export interface ValidatedRecipe extends ResolvedRecipe {
   limits: RecipeLimits;
+  /**
+   * Both required here, and that is the whole compile-time guarantee.
+   *
+   * A recipe *declares* an optional preference; a validated one has been
+   * resolved against the host's allowlist, which core guarantees is non-empty —
+   * `CoreConfigOverrides` requires a model pair and `resolveConfig` refuses an
+   * empty or self-identical one. So there is always a real id to fall back to,
+   * and everything downstream reads `string` rather than `string | undefined`.
+   */
+  primaryModelId: string;
+  fallbackModelId: string;
 }
 
 /**

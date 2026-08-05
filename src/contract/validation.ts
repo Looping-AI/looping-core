@@ -124,14 +124,30 @@ export function validateRecipe(
   const toolFamilies = [...new Set(recipe.toolFamilies)].filter((family) =>
     policy.knownToolFamilies.has(family)
   );
+  // A recipe's model ids are an optional *preference*. Omitting them — which is
+  // what a published plugin should do, since it cannot know what its host is
+  // billed for — and naming something outside the host's allowlist both resolve
+  // to the host's own pair.
+  //
+  // The `undefined` check is redundant at runtime (`undefined` is never in an
+  // allowlist) and kept for the type: it is what narrows `string | undefined`
+  // to `string`, which is what lets `ValidatedRecipe` require both fields.
+  //
+  // The host's pair is guaranteed non-empty upstream — `CoreConfigOverrides`
+  // requires it and `resolveConfig` refuses an empty or self-identical one — so
+  // there is always something real to substitute.
+  const prefer = (wanted: string | undefined, fallbackTo: string): string =>
+    wanted !== undefined && policy.modelAllowlist.has(wanted)
+      ? wanted
+      : fallbackTo;
+
   return {
     ...recipe,
-    primaryModelId: policy.modelAllowlist.has(recipe.primaryModelId)
-      ? recipe.primaryModelId
-      : policy.defaultPrimaryModelId,
-    fallbackModelId: policy.modelAllowlist.has(recipe.fallbackModelId)
-      ? recipe.fallbackModelId
-      : policy.defaultFallbackModelId,
+    primaryModelId: prefer(recipe.primaryModelId, policy.defaultPrimaryModelId),
+    fallbackModelId: prefer(
+      recipe.fallbackModelId,
+      policy.defaultFallbackModelId
+    ),
     toolFamilies,
     limits: resolveLimits(recipe.limits, policy.baselineLimits)
   };
