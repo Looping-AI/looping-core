@@ -43,6 +43,7 @@ export {
   GATEWAY_ORIGIN,
   TEST_AGENT_PRIVATE_JWK,
   TEST_GATEWAY_PRIVATE_JWK,
+  TEST_MODELS,
   gatewayPublicJwks,
   testAgentMessage,
   testStatus,

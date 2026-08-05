@@ -103,7 +103,15 @@ export interface AgentHarness {
   readonly callbacks: CapturedCallback[];
 }
 
-/** Project the push envelope onto the three fields a spec usually asserts. */
+/**
+ * Project the push envelope onto the three fields a spec usually asserts.
+ *
+ * Reads `status.message.parts` — the key the wire form actually uses. It read
+ * `content` until `harness.spec.ts` drove a real callback through it, which
+ * made `text` the empty string on every capture: silently, since a harness
+ * reporting `""` for what an agent said looks exactly like an agent that said
+ * nothing, and the no-reply completion is a legitimate outcome.
+ */
 function projectCallback(
   body: unknown,
   token: string | null
@@ -111,9 +119,9 @@ function projectCallback(
   const task = (body as { task?: unknown }).task ?? body;
   const t = task as {
     id?: string;
-    status?: { state?: string; message?: { content?: { text?: string }[] } };
+    status?: { state?: string; message?: { parts?: { text?: string }[] } };
   };
-  const parts = t.status?.message?.content ?? [];
+  const parts = t.status?.message?.parts ?? [];
   return {
     taskId: t.id ?? "",
     state: t.status?.state ?? "",
@@ -177,21 +185,33 @@ export function createAgentHarness<TEnv>(
         jsonrpc: "2.0",
         id: 1,
         method: "SendMessage",
+        // `SendMessageRequest` is **flat**: `tenant`, `message`, `configuration`,
+        // `metadata`. There is no `request` wrapper, and wrapping is silent when
+        // you do it — `fromJSON` drops unknown keys rather than rejecting them,
+        // so the whole turn decodes to an empty message with no push config and
+        // the agent refuses it for "missing" fields the caller did send.
+        //
+        // This harness shipped with exactly that envelope. Nothing caught it,
+        // because nothing in this package drove the harness against a real
+        // Worker until `harness.spec.ts` — which is the argument for that spec
+        // existing, made by the code it tests.
         params: {
           tenant,
-          request: {
-            message: {
-              messageId,
-              role: "ROLE_USER",
-              content: [{ text }],
-              ...(sendOptions.taskId ? { taskId: sendOptions.taskId } : {})
-            },
-            configuration: {
-              // Required by the accept-and-notify contract: an agent that replies
-              // out of band and is given nowhere to call back has accepted a turn
-              // it can never answer.
-              taskPushNotificationConfig: { url: pushUrl, token: pushToken }
-            }
+          message: {
+            messageId,
+            role: "ROLE_USER",
+            // `parts`, not `content`. The decoded `Message` exposes `parts`, and
+            // `fromJSON` silently yields an empty list for anything else — so a
+            // turn sent under the wrong key arrives as a message with no text
+            // and the agent answers a blank prompt.
+            parts: [{ text }],
+            ...(sendOptions.taskId ? { taskId: sendOptions.taskId } : {})
+          },
+          configuration: {
+            // Required by the accept-and-notify contract: an agent that replies
+            // out of band and is given nowhere to call back has accepted a turn
+            // it can never answer.
+            taskPushNotificationConfig: { url: pushUrl, token: pushToken }
           }
         }
       });

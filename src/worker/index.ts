@@ -367,6 +367,22 @@ export function createA2AWorker<TEnv extends object>(
         "`tenants` — declare each agent once"
     );
   }
+  // …and the same ambiguity within `agents` alone, which the check above cannot
+  // see. `definedByTenant` below is a `Map`, so a repeated id silently keeps the
+  // *last* entry: two `defineAgent` calls sharing a tenant would mount one and
+  // discard the other with no signal anywhere. That is the identical failure the
+  // cross-check exists to prevent, reached by copy-pasting a declaration rather
+  // than by mixing the two forms — which is the likelier mistake of the two.
+  const seen = new Set<string>();
+  for (const agent of defined) {
+    if (seen.has(agent.tenant)) {
+      throw new Error(
+        `createA2AWorker got tenant '${agent.tenant}' twice in \`agents\` — ` +
+          "declare each agent once"
+      );
+    }
+    seen.add(agent.tenant);
+  }
   // Nothing can be served without at least one agent, and a deployment that
   // configured none is a startup mistake rather than a per-request one.
   const tenantIds = [...Object.keys(declared), ...defined.map((a) => a.tenant)];

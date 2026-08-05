@@ -6,6 +6,7 @@ import {
   toModelMessages
 } from "./history.js";
 import { FakeSession } from "../testing/fake-session.js";
+import { TEST_MODELS } from "../testing/fixtures.js";
 import { ConfigError, DEFAULT_CORE_CONFIG, resolveConfig } from "../config.js";
 import type { SessionMessage } from "agents/experimental/memory/session";
 
@@ -159,16 +160,23 @@ describe("the compaction headroom invariant", () => {
     // a summarizer call on a near-empty middle. It is a config error, not a
     // tuning preference.
     expect(() =>
-      resolveConfig({ session: { compactAfterTokens: 12_000 } })
+      resolveConfig({
+        model: TEST_MODELS,
+        session: { compactAfterTokens: 12_000 }
+      })
     ).toThrow(ConfigError);
 
     expect(() =>
-      resolveConfig({ session: { compactAfterTokens: 12_000 } })
+      resolveConfig({
+        model: TEST_MODELS,
+        session: { compactAfterTokens: 12_000 }
+      })
     ).toThrow(/>= 10000/);
   });
 
   it("accepts a lower threshold when the tail comes down with it", () => {
     const config = resolveConfig({
+      model: TEST_MODELS,
       session: { compactAfterTokens: 12_000, compactTailTokens: 1_000 }
     });
 
@@ -177,9 +185,11 @@ describe("the compaction headroom invariant", () => {
   });
 
   it("refuses non-positive budgets", () => {
-    expect(() => resolveConfig({ maxSubtasks: 0 })).toThrow(ConfigError);
-    expect(() => resolveConfig({ mainAgentLimits: { maxTurns: -1 } })).toThrow(
-      /maxTurns/
+    expect(() => resolveConfig({ model: TEST_MODELS, maxSubtasks: 0 })).toThrow(
+      ConfigError
     );
+    expect(() =>
+      resolveConfig({ model: TEST_MODELS, mainAgentLimits: { maxTurns: -1 } })
+    ).toThrow(/maxTurns/);
   });
 });

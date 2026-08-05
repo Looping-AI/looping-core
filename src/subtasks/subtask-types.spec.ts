@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { TEST_MODELS } from "../testing/fixtures.js";
 import { z } from "zod";
 import { makeSubtaskTypes, SubtaskParamsError } from "./subtask-types.js";
-import { DEFAULT_CORE_CONFIG } from "../config.js";
 import type { ResolvedRecipe, SubtaskTypeSpec } from "../contract/recipe.js";
 
 /**
@@ -19,8 +19,8 @@ import type { ResolvedRecipe, SubtaskTypeSpec } from "../contract/recipe.js";
 const recipe = (key: string): ResolvedRecipe => ({
   key,
   version: 1,
-  primaryModelId: DEFAULT_CORE_CONFIG.model.chatModelId,
-  fallbackModelId: DEFAULT_CORE_CONFIG.model.fallbackChatModelId,
+  primaryModelId: TEST_MODELS.chatModelId,
+  fallbackModelId: TEST_MODELS.fallbackChatModelId,
   soul: "s",
   toolFamilies: [],
   enabled: true,

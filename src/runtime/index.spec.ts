@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { TEST_MODELS } from "../testing/fixtures.js";
 import { z } from "zod";
 import { tool, type ToolSet } from "ai";
 import type { SessionMessage } from "agents/experimental/memory/session";
@@ -31,8 +32,8 @@ import type { ResolvedRecipe, SubtaskTypeSpec } from "../contract/recipe.js";
 const recipe = (key: string): ResolvedRecipe => ({
   key,
   version: 1,
-  primaryModelId: DEFAULT_CORE_CONFIG.model.chatModelId,
-  fallbackModelId: DEFAULT_CORE_CONFIG.model.fallbackChatModelId,
+  primaryModelId: TEST_MODELS.chatModelId,
+  fallbackModelId: TEST_MODELS.fallbackChatModelId,
   soul: `You are the ${key} subagent.`,
   toolFamilies: [],
   enabled: true,
@@ -69,10 +70,12 @@ describe("createAgentRuntime — what it refuses at startup", () => {
     const a = definePlugin({ key: "dup" });
     const b = definePlugin({ key: "dup" });
 
-    expect(() => createAgentRuntime({ plugins: [a, b] })).toThrow(
-      RuntimeSetupError
-    );
-    expect(() => createAgentRuntime({ plugins: [a, b] })).toThrow(/dup/);
+    expect(() =>
+      createAgentRuntime({ config: { model: TEST_MODELS }, plugins: [a, b] })
+    ).toThrow(RuntimeSetupError);
+    expect(() =>
+      createAgentRuntime({ config: { model: TEST_MODELS }, plugins: [a, b] })
+    ).toThrow(/dup/);
   });
 
   it("refuses a plugin built against a different contract version", () => {
@@ -84,9 +87,9 @@ describe("createAgentRuntime — what it refuses at startup", () => {
       contractVersion: PLUGIN_CONTRACT_VERSION + 1
     };
 
-    expect(() => createAgentRuntime({ plugins: [stale] })).toThrow(
-      /contract v|speaks v/
-    );
+    expect(() =>
+      createAgentRuntime({ config: { model: TEST_MODELS }, plugins: [stale] })
+    ).toThrow(/contract v|speaks v/);
   });
 
   it("refuses two plugins registering the same tool family", () => {
@@ -99,9 +102,9 @@ describe("createAgentRuntime — what it refuses at startup", () => {
       toolFamilies: { shared: noopFamily("two") }
     });
 
-    expect(() => createAgentRuntime({ plugins: [a, b] })).toThrow(
-      /"shared".*"a".*"b"/s
-    );
+    expect(() =>
+      createAgentRuntime({ config: { model: TEST_MODELS }, plugins: [a, b] })
+    ).toThrow(/"shared".*"a".*"b"/s);
   });
 
   it("refuses a missing binding only when env is supplied to check against", () => {
@@ -112,20 +115,37 @@ describe("createAgentRuntime — what it refuses at startup", () => {
 
     // Core cannot know which of a consumer's bindings are optional, so the
     // check is opt-in.
-    expect(() => createAgentRuntime({ plugins: [needsKey] })).not.toThrow();
+    expect(() =>
+      createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [needsKey]
+      })
+    ).not.toThrow();
 
-    expect(() => createAgentRuntime({ plugins: [needsKey], env: {} })).toThrow(
-      /SOME_API_KEY.*needy/s
-    );
+    expect(() =>
+      createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [needsKey],
+        env: {}
+      })
+    ).toThrow(/SOME_API_KEY.*needy/s);
 
     // An empty string is a missing secret, not a present one — this is the
     // shape a `wrangler secret` that was never set actually takes.
     expect(() =>
-      createAgentRuntime({ plugins: [needsKey], env: { SOME_API_KEY: "" } })
+      createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [needsKey],
+        env: { SOME_API_KEY: "" }
+      })
     ).toThrow(/SOME_API_KEY/);
 
     expect(() =>
-      createAgentRuntime({ plugins: [needsKey], env: { SOME_API_KEY: "sk-1" } })
+      createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [needsKey],
+        env: { SOME_API_KEY: "sk-1" }
+      })
     ).not.toThrow();
   });
 });
@@ -149,7 +169,10 @@ describe("createAgentRuntime — what it composes", () => {
   });
 
   it("builds the type registry, family map and stores from the plugin list", () => {
-    const rt = createAgentRuntime({ plugins: [alpha, beta] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [alpha, beta]
+    });
 
     expect(rt.types.keys).toEqual(["alpha", "beta"]);
     expect([...rt.toolFamilies.keys()]).toEqual(["alphaTools"]);
@@ -161,12 +184,13 @@ describe("createAgentRuntime — what it composes", () => {
     // The predecessor hardcoded `KNOWN_TOOL_FAMILIES` as a literal Set naming
     // three families, one of them a domain's. The legal set is now exactly what
     // the installed plugins registered.
-    const rt = createAgentRuntime({ plugins: [alpha, beta] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [alpha, beta]
+    });
 
     expect([...rt.policy.knownToolFamilies]).toEqual(["alphaTools"]);
-    expect(
-      rt.policy.modelAllowlist.has(DEFAULT_CORE_CONFIG.model.chatModelId)
-    ).toBe(true);
+    expect(rt.policy.modelAllowlist.has(TEST_MODELS.chatModelId)).toBe(true);
   });
 
   it("routes lifecycle hooks to the plugin owning the subtask type", async () => {
@@ -177,7 +201,10 @@ describe("createAgentRuntime — what it composes", () => {
       enrichResult: async (_ctx, result) => ({ ...result, enriched: true })
     });
 
-    const rt = createAgentRuntime({ plugins: [withHooks, beta] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [withHooks, beta]
+    });
     const ctx = {
       taskId: "t1",
       subtaskId: 1,
@@ -199,7 +226,10 @@ describe("createAgentRuntime — what it composes", () => {
   });
 
   it("merges main-agent tools and capability blocks across plugins", async () => {
-    const rt = createAgentRuntime({ plugins: [alpha, beta] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [alpha, beta]
+    });
 
     expect(Object.keys(await rt.mainAgentTools(toolCtx()))).toEqual([
       "alphaLookup"
@@ -221,7 +251,10 @@ describe("createAgentRuntime — what it composes", () => {
           ? { search: tool({ description: "s", inputSchema: z.object({}) }) }
           : {}
     });
-    const rt = createAgentRuntime({ plugins: [alpha, archival] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [alpha, archival]
+    });
 
     expect(Object.keys(await rt.mainAgentTools(toolCtx()))).toEqual([
       "alphaLookup"
@@ -234,7 +267,10 @@ describe("createAgentRuntime — what it composes", () => {
   it("returns an empty capability string when no plugin declares one", () => {
     // Named because it is what lets a call site append unconditionally instead
     // of emitting a separator around nothing.
-    const rt = createAgentRuntime({ plugins: [definePlugin({ key: "bare" })] });
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [definePlugin({ key: "bare" })]
+    });
     expect(rt.renderCapabilities()).toBe("");
   });
 
@@ -249,7 +285,10 @@ describe("createAgentRuntime — what it composes", () => {
       definePlugin({ key, shouldHandleTurn: async () => answer });
 
     it("handles the turn when no plugin declares a gate", async () => {
-      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [alpha, beta]
+      });
       expect(await rt.shouldHandleTurn(ctx)).toBe(true);
     });
 
@@ -257,6 +296,7 @@ describe("createAgentRuntime — what it composes", () => {
       // AND, not majority or first-wins: a plugin installed to keep the agent
       // quiet in a busy channel has to be able to keep it quiet on its own.
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [gate("permissive", true), gate("triage", false)]
       });
       expect(await rt.shouldHandleTurn(ctx)).toBe(false);
@@ -274,6 +314,7 @@ describe("createAgentRuntime — what it composes", () => {
         });
 
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [recording("one"), beta, recording("two")]
       });
       expect(await rt.shouldHandleTurn(ctx)).toBe(true);
@@ -287,6 +328,7 @@ describe("createAgentRuntime — what it composes", () => {
       // behaviour — run the turn — and never to a mute agent.
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [
           definePlugin({
             key: "broken",
@@ -312,6 +354,7 @@ describe("createAgentRuntime — what it composes", () => {
       let consulted = false;
 
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [
           definePlugin({
             key: "sync-thrower",
@@ -347,7 +390,10 @@ describe("createAgentRuntime — what it composes", () => {
     it("falls back to an in-memory backing when no plugin declares one", async () => {
       // Always defined, so `SubagentRuntime.workspaceBacking` stays required and
       // a host never writes a null check for a capability it did not install.
-      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [alpha, beta]
+      });
       const ws = rt.workspaceBacking({} as SqlStorage, () => "child");
 
       await ws.writeFile("notes.md", "hello");
@@ -368,7 +414,10 @@ describe("createAgentRuntime — what it composes", () => {
         }
       });
 
-      const rt = createAgentRuntime({ plugins: [alpha, declared] });
+      const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [alpha, declared]
+      });
       const ws = rt.workspaceBacking(sql, () => "subtask:t1:1");
 
       expect(await ws.readFile("marker")).toBe("from the declared backing");
@@ -381,10 +430,16 @@ describe("createAgentRuntime — what it composes", () => {
       // Two backends means two answers to "where did that file go", and the file
       // lands in whichever the runtime happened to pick.
       expect(() =>
-        createAgentRuntime({ plugins: [backing("shell"), backing("r2")] })
+        createAgentRuntime({
+          config: { model: TEST_MODELS },
+          plugins: [backing("shell"), backing("r2")]
+        })
       ).toThrow(RuntimeSetupError);
       expect(() =>
-        createAgentRuntime({ plugins: [backing("shell"), backing("r2")] })
+        createAgentRuntime({
+          config: { model: TEST_MODELS },
+          plugins: [backing("shell"), backing("r2")]
+        })
       ).toThrow(/shell.*r2|r2.*shell/);
     });
   });
@@ -408,6 +463,7 @@ describe("createAgentRuntime — what it composes", () => {
         });
 
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [listener("one"), beta, listener("two")]
       });
       await rt.onMessagesDisplaced(displaced);
@@ -426,6 +482,7 @@ describe("createAgentRuntime — what it composes", () => {
       let delivered: string[] = [];
 
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [
           definePlugin({
             key: "broken",
@@ -463,6 +520,7 @@ describe("createAgentRuntime — what it composes", () => {
       let delivered: string[] = [];
 
       const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
         plugins: [
           definePlugin({
             key: "sync-thrower",
@@ -492,7 +550,10 @@ describe("createAgentRuntime — what it composes", () => {
     });
 
     it("resolves cleanly when no plugin declares it", async () => {
-      const rt = createAgentRuntime({ plugins: [alpha, beta] });
+      const rt = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [alpha, beta]
+      });
       await expect(rt.onMessagesDisplaced(displaced)).resolves.toBeUndefined();
     });
   });
@@ -500,7 +561,10 @@ describe("createAgentRuntime — what it composes", () => {
   it("applies config overrides over the defaults", () => {
     const rt = createAgentRuntime({
       plugins: [],
-      config: { maxSubtasks: 3, model: { chatModelId: "@cf/custom/model" } }
+      config: {
+        maxSubtasks: 3,
+        model: { ...TEST_MODELS, chatModelId: "@cf/custom/model" }
+      }
     });
 
     expect(rt.config.maxSubtasks).toBe(3);
@@ -508,6 +572,24 @@ describe("createAgentRuntime — what it composes", () => {
     // Untouched groups still come from the baseline.
     expect(rt.config.subagentLimits).toEqual(
       DEFAULT_CORE_CONFIG.subagentLimits
+    );
+  });
+
+  it("takes the model pair from the agent, never from a baseline", () => {
+    // The baseline has no model ids to fall back to — that is the point, and it
+    // is checked structurally here so a future edit cannot quietly restore one.
+    expect(DEFAULT_CORE_CONFIG.model).not.toHaveProperty("chatModelId");
+    expect(DEFAULT_CORE_CONFIG.model).not.toHaveProperty("fallbackChatModelId");
+
+    const rt = createAgentRuntime({
+      plugins: [],
+      config: { model: TEST_MODELS }
+    });
+    expect(rt.config.model.chatModelId).toBe(TEST_MODELS.chatModelId);
+    // The allowlist a recipe's models are checked against is built from these,
+    // so an agent that named nothing would validate every recipe against "".
+    expect(rt.policy.modelAllowlist).toEqual(
+      new Set([TEST_MODELS.chatModelId, TEST_MODELS.fallbackChatModelId])
     );
   });
 });

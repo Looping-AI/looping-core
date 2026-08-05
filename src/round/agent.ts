@@ -361,7 +361,18 @@ export abstract class RoundAgentBase<
   async failSubtask(id: SubtaskId, error: string): Promise<void> {
     const subtask = this.db.subtasks.get(id);
     if (!subtask) return;
-    this.db.subtasks.fail(id, error);
+    // `fail` is a guarded `running|pending -> failed`, and its verdict is the
+    // whole idempotency claim above. Dropping it made this method a no-op in
+    // *name* only: a late workflow failure that lost the race to a real result
+    // would still release the branch's runtime, abort its child and delete it —
+    // tearing down a branch that had already succeeded.
+    //
+    // That is also precisely the teardown `executeSubtaskChunk` defers on the
+    // success path, because aborting a facet in the same tick its RPC returned
+    // makes telemetry record the success as a failure. Cleanup for an
+    // already-terminal row belongs to `sweepTaskChildren`, which runs after
+    // delivery and knows the whole task is done with.
+    if (!this.db.subtasks.fail(id, error)) return;
     const name = subagentName(subtask.taskId, id);
     await this.releaseRuntimeQuietly(subtask);
     await this.abortChildQuietly(name, this.toolFamiliesForType(subtask.type));
@@ -785,7 +796,26 @@ export abstract class RoundAgentBase<
       const name = subagentName(taskId, subtask.id);
       try {
         const child = await this.subAgent(this.subagentClass(), name);
-        await child.abortRun();
+        // `false` means there was no in-flight RPC to interrupt. That is not the
+        // "nothing to do" case it looks like: a `running` row whose isolate was
+        // evicted or crashed has no live promise, so nobody is coming back to
+        // transition it. The chunk path resolves a running row when its result
+        // returns; here the result never will.
+        //
+        // Left alone, the row stays `running` until the 30-day sweep, and — the
+        // part that actually costs something — its child facet is never aborted
+        // or deleted, so whatever external state the recipe's `abort` hook would
+        // have released stays held. Finish the transition and run the same
+        // cleanup the post-chunk cancellation path does.
+        if (await child.abortRun()) continue;
+        if (this.db.subtasks.cancelRunning(subtask.id)) {
+          await this.releaseRuntimeQuietly(subtask);
+          await this.abortChildQuietly(
+            name,
+            this.toolFamiliesForType(subtask.type)
+          );
+          await this.deleteChildQuietly(name);
+        }
       } catch (err) {
         console.warn("[agent] subagent abortRun failed", {
           name,

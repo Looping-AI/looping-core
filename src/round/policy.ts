@@ -29,6 +29,31 @@ import type { AgentLimits } from "../config.js";
  * empty contract would produce a round the model has no way to end correctly,
  * and a lending default would be exactly the house prompt copy core refuses to
  * have.
+ *
+ * ## Each prompt string owns its own leading separator
+ *
+ * {@link roundContract} and {@link finalRoundNote} are concatenated directly
+ * onto text that came from somewhere else — the soul, the caller context, and
+ * for `finalRoundNote` the open contract itself. The composition adds nothing
+ * between them, so **start each with a blank line** (`\n\n`, or a template
+ * literal opening on an empty line, which is what the starter does):
+ *
+ * ```ts
+ * roundContract: () => `
+ *
+ * # Answering this request
+ * …`
+ * ```
+ *
+ * Return `"# Answering this request…"` with no leading newline and the model
+ * reads `Calling workspace: 1.# Answering this request` — a run-together line
+ * that costs nothing to produce and is invisible in every test that does not
+ * assert on the rendered prompt.
+ *
+ * Core does not insert the separator for you, because these are *your* sections
+ * and a section that cannot control its own spacing cannot control its shape —
+ * a policy that legitimately wants a single newline, or continues the previous
+ * paragraph, has no way to say so once core has decided.
  */
 export interface RoundPolicy {
   /**
