@@ -1,6 +1,12 @@
 import { importJWK, SignJWT } from "jose";
-import { IDENTITY_CLAIM, TENANT_CLAIM } from "../a2a/verify.js";
-import { A2A_RPC_PATH } from "../a2a/card.js";
+import {
+  A2A_JWS_ALG,
+  A2A_RPC_PATH,
+  IDENTITY_CLAIM,
+  TENANT_CLAIM,
+  endpointUrl,
+  jwksUrl
+} from "@loopingai/a2a-protocol";
 import {
   TEST_GATEWAY_PRIVATE_JWK,
   GATEWAY_ORIGIN,
@@ -47,25 +53,31 @@ export async function makeGatewayToken(
 ): Promise<string> {
   const privateKey = await importJWK(TEST_GATEWAY_PRIVATE_JWK, "EdDSA");
   const tenant = options.tenant ?? TEST_TENANT;
-  return new SignJWT({
-    [options.identityClaim ?? IDENTITY_CLAIM]: options.identity ?? {
-      key: "custom:1:test-agent",
-      name: "Test Agent",
-      kind: "custom",
-      workspaceId: 1
-    },
-    // An empty tenant omits the claim entirely rather than signing `""` — that
-    // is the "gateway too old to scope its tokens" case, and it must be
-    // rejected rather than treated as a wildcard.
-    ...(tenant ? { [options.tenantClaim ?? TENANT_CLAIM]: tenant } : {})
-  })
-    .setProtectedHeader({
-      alg: "EdDSA",
-      kid: TEST_GATEWAY_PRIVATE_JWK.kid,
-      jku: `${GATEWAY_ORIGIN}/.well-known/jwks.json`
+  return (
+    new SignJWT({
+      [options.identityClaim ?? IDENTITY_CLAIM]: options.identity ?? {
+        key: "custom:1:test-agent",
+        name: "Test Agent",
+        kind: "custom",
+        workspaceId: 1
+      },
+      // An empty tenant omits the claim entirely rather than signing `""` — that
+      // is the "gateway too old to scope its tokens" case, and it must be
+      // rejected rather than treated as a wildcard.
+      ...(tenant ? { [options.tenantClaim ?? TENANT_CLAIM]: tenant } : {})
     })
-    .setIssuer(options.issuer ?? GATEWAY_ORIGIN)
-    .setAudience(options.audience ?? `${AGENT_ORIGIN}${A2A_RPC_PATH}`)
-    .setExpirationTime(options.expiresIn ?? "5m")
-    .sign(privateKey);
+      // Composed from `@loopingai/a2a-protocol`, the same package the real
+      // gateway mints with. A fixture that agrees with the verifier but not with
+      // the issuer is worse than no fixture: the suite goes green on tokens
+      // nothing in production would ever send.
+      .setProtectedHeader({
+        alg: A2A_JWS_ALG,
+        kid: TEST_GATEWAY_PRIVATE_JWK.kid,
+        jku: jwksUrl(GATEWAY_ORIGIN)
+      })
+      .setIssuer(options.issuer ?? GATEWAY_ORIGIN)
+      .setAudience(options.audience ?? endpointUrl(AGENT_ORIGIN, A2A_RPC_PATH))
+      .setExpirationTime(options.expiresIn ?? "5m")
+      .sign(privateKey)
+  );
 }

@@ -1,6 +1,6 @@
 {
   "name": "@loopingai/core",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Shared, mandatory foundation for Looping agents on Cloudflare Workers: zero-trust A2A, durable task lifecycle, delegation and subagent runtime, test harness.",
   "keywords": [
     "a2a",
@@ -53,6 +53,14 @@
       "types": "./dist/agent/index.d.ts",
       "import": "./dist/agent/index.js"
     },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "import": "./dist/host/index.js"
+    },
+    "./round": {
+      "types": "./dist/round/index.d.ts",
+      "import": "./dist/round/index.js"
+    },
     "./subtasks": {
       "types": "./dist/subtasks/index.d.ts",
       "import": "./dist/subtasks/index.js"
@@ -101,6 +109,7 @@
   "dependencies": {
     "@a2a-js/sdk": "^1.0.0",
     "@cloudflare/workers-types": "^5.20260804.1",
+    "@loopingai/a2a-protocol": "^0.2.0",
     "drizzle-orm": "^0.45.2",
     "jose": "^6.2.8",
     "zod": "^4.4.3"
@@ -108,7 +117,7 @@
   "peerDependencies": {
     "@cloudflare/vitest-pool-workers": ">=0.18",
     "agents": "^0.20.0",
-    "ai": "^7.0.51",
+    "ai": "^7.0.52",
     "vitest": ">=4",
     "workers-ai-provider": "^4.0.0"
   },
@@ -124,7 +133,7 @@
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^26.1.1",
     "agents": "^0.20.0",
-    "ai": "^7.0.40",
+    "ai": "^7.0.52",
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.8.0",
     "prettier": "^3.9.6",
