@@ -74,7 +74,13 @@ export interface HandleTaskParams {
  * 250-line orchestration.
  */
 export interface HandleTaskDeps {
-  /** Route to the right DO class for the verified caller. */
+  /**
+   * Route to the right DO class for the verified caller.
+   *
+   * Called **once per step body**, not once per run, so it must stay a cheap
+   * pure lookup — a namespace `get`, nothing cached and nothing awaited. See
+   * {@link ResolveAgent} for why the result must never be hoisted.
+   */
   resolveAgent: (identity: GatewayIdentity) => AgentStub;
   /** Resolved config — the loop reads `mainAgentLimits` and `maxSubtasks`. */
   config: CoreConfig;
@@ -99,6 +105,36 @@ export interface HandleTaskDeps {
 type AgentStub = DurableObjectStub<RoundAgentBase>;
 
 /**
+ * Get a **fresh** stub. Called inside a step body, never hoisted above one.
+ *
+ * A Durable Object stub is not a durable address, it is a live connection, and a
+ * broken one stays broken: once the runtime severs it — a deploy replacing the
+ * object's code is the ordinary way — every later call on that same stub rejects
+ * immediately with the reason it broke, forever. It never reconnects. Only a new
+ * stub from the namespace does.
+ *
+ * A Workflow is exactly where that matters, because it is the one caller that
+ * outlives the object it is calling. A hoisted stub survives as a closure
+ * variable across every step and every retry, so a single eviction poisons the
+ * whole run: each retry re-enters the body, calls the same dead connection, and
+ * fails in microseconds no matter how long the backoff waited. The retries look
+ * like they ran. Nothing ran.
+ *
+ * That is not hypothetical — it cost a task in production. A deploy landed three
+ * minutes before a turn; the object was collected 43 seconds into
+ * `executeSubtaskChunk`; the five retries that followed each failed in under
+ * 10ms across 160 seconds of backoff, and then `fail:<id>` — the handler meant to
+ * salvage the branch — failed six more times on the same dead stub. The Subtask
+ * never reached a terminal row, `deliver` was never reached, and the gateway got
+ * no callback at all. Not a failure message. Silence.
+ *
+ * Resolving per step body costs a namespace lookup and an object allocation, and
+ * buys back the property the retries were supposed to have. `DurableTaskStore`
+ * already resolves this way for the same reason.
+ */
+type ResolveAgent = () => AgentStub;
+
+/**
  * The orchestration itself, split from the `WorkflowEntrypoint` wiring so it can
  * be driven with a fake `step` in tests (workerd forbids constructing a
  * `WorkflowEntrypoint` outside the runtime) — and so a second agent can reuse it
@@ -120,8 +156,10 @@ export async function runHandleTask(
   deps: HandleTaskDeps
 ): Promise<void> {
   const limits = deps.config.mainAgentLimits;
-  // Pre-work. Routing is pure, so it needs no step of its own.
-  const stub = deps.resolveAgent(p.identity);
+  // Pre-work. Routing is pure, so it needs no step of its own — but it is
+  // deliberately *not* resolved here into a value the steps below close over.
+  // See {@link ResolveAgent}.
+  const agent: ResolveAgent = () => deps.resolveAgent(p.identity);
   const push: TurnPushContext = {
     taskId: p.taskId,
     contextId: p.contextId,
@@ -132,7 +170,7 @@ export async function runHandleTask(
 
   const started = await step.do(
     "working",
-    async () => (await stub.markWorking(p.taskId)) === "ok"
+    async () => (await agent().markWorking(p.taskId)) === "ok"
   );
   if (!started) return;
 
@@ -194,7 +232,7 @@ export async function runHandleTask(
       // Projected to a plain object: an RPC return carries a `Disposable` brand a
       // step result cannot serialize. Every branch must carry `turns` — a field
       // this projection drops is a field the budget never sees.
-      const result = await stub.runTaskTurn({
+      const result = await agent().runTaskTurn({
         taskId: p.taskId,
         text: p.text,
         identity: p.identity,
@@ -227,19 +265,19 @@ export async function runHandleTask(
         round,
         error: turn.error
       });
-      await deliver(p, step, stub, null, deps);
+      await deliver(p, step, agent, null, deps);
       return;
     }
     if (turn.status === "replied") {
-      await deliver(p, step, stub, turn.reply, deps);
+      await deliver(p, step, agent, turn.reply, deps);
       return;
     }
 
     // Delegated: run this round's DAG, then loop and let the model decide again.
-    const executed = await executeDag(p, step, stub, round, push, deps);
+    const executed = await executeDag(p, step, agent, round, push, deps);
     if (executed === "canceled") return;
     if (executed === "stuck") {
-      await deliver(p, step, stub, null, deps);
+      await deliver(p, step, agent, null, deps);
       return;
     }
   }
@@ -250,7 +288,7 @@ export async function runHandleTask(
   console.error("[handle-task] round budget exhausted without a reply", {
     taskId: p.taskId
   });
-  await deliver(p, step, stub, null, deps);
+  await deliver(p, step, agent, null, deps);
 }
 
 /**
@@ -278,7 +316,7 @@ type DagOutcome = "done" | "canceled" | "stuck";
 async function executeDag(
   p: HandleTaskParams,
   step: WorkflowStep,
-  stub: AgentStub,
+  agent: ResolveAgent,
   round: number,
   push: TurnPushContext,
   deps: HandleTaskDeps
@@ -288,7 +326,7 @@ async function executeDag(
     // propagates skips past any branch that just failed, and returns the
     // refreshed DAG projection — one round trip, one consistent answer.
     const scan = await step.do(`scan:${round}:${wave}`, async () => {
-      const result = await stub.skipBlockedSubtasks(p.taskId, round);
+      const result = await agent().skipBlockedSubtasks(p.taskId, round);
       return result.canceled
         ? { canceled: true as const, nodes: [] }
         : { canceled: false as const, nodes: result.nodes };
@@ -296,7 +334,7 @@ async function executeDag(
 
     if (scan.canceled) {
       await step.do(`cancel:${round}:${wave}`, async () => {
-        await stub.cancelPendingSubtasks(p.taskId);
+        await agent().cancelPendingSubtasks(p.taskId);
       });
       return "canceled";
     }
@@ -318,7 +356,7 @@ async function executeDag(
     // branch cannot fast-fail `Promise.all` and strand its siblings' durable
     // results.
     await Promise.all(
-      decision.ids.map((id) => runBranch(p, step, stub, id, push))
+      decision.ids.map((id) => runBranch(p, step, agent, id, push))
     );
   }
 
@@ -358,7 +396,7 @@ async function executeDag(
 async function runBranch(
   p: HandleTaskParams,
   step: WorkflowStep,
-  stub: AgentStub,
+  agent: ResolveAgent,
   id: SubtaskId,
   push: TurnPushContext
 ): Promise<void> {
@@ -370,7 +408,7 @@ async function runBranch(
         chunk === 0 ? `execute:${id}` : `execute:${id}:chunk:${chunk}`;
       const done = await step.do(stepName, async () => {
         // The DO posts any progress itself; the step returns only the verdict.
-        const outcome = await stub.executeSubtaskChunk(id, chunk, push);
+        const outcome = await agent().executeSubtaskChunk(id, chunk, push);
         return outcome.done;
       });
       if (done) return;
@@ -382,7 +420,7 @@ async function runBranch(
       subtaskId: id
     });
     await step.do(`fail:${id}`, async () => {
-      await stub.failSubtask(
+      await agent().failSubtask(
         id,
         `execution exceeded ${MAX_CHUNKS_PER_BRANCH} chunks`
       );
@@ -394,7 +432,10 @@ async function runBranch(
       err: String(err)
     });
     await step.do(`fail:${id}`, async () => {
-      await stub.failSubtask(id, `execution exhausted retries: ${String(err)}`);
+      await agent().failSubtask(
+        id,
+        `execution exhausted retries: ${String(err)}`
+      );
     });
   }
 }
@@ -418,7 +459,7 @@ async function runBranch(
 async function deliver(
   p: HandleTaskParams,
   step: WorkflowStep,
-  stub: AgentStub,
+  agent: ResolveAgent,
   reply: string | null,
   deps: HandleTaskDeps
 ): Promise<void> {
@@ -427,7 +468,7 @@ async function deliver(
       reply !== null
         ? buildCompletedTask(p.taskId, p.contextId, reply)
         : buildFailedTask(p.taskId, p.contextId, deps.policy.copy.taskFailed);
-    return (await stub.saveTask(terminal)) ? terminal : null;
+    return (await agent().saveTask(terminal)) ? terminal : null;
   });
   if (!task) return;
 
@@ -443,7 +484,7 @@ async function deliver(
   // this Task's children were reclaimed.
   try {
     await step.do("sweep", async () => {
-      await stub.sweepTaskChildren(p.taskId);
+      await agent().sweepTaskChildren(p.taskId);
     });
   } catch (err) {
     console.error("[handle-task] sweep failed after retries", {

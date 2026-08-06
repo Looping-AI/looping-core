@@ -47,6 +47,11 @@ const policy: RoundPolicy = {
 interface FakeStepOptions {
   /** Step results served without running the body — a Workflow replay. */
   cached?: Record<string, unknown>;
+  /**
+   * Extra attempts a throwing body gets, like the platform's own step retries.
+   * Zero (the default) keeps every other spec's single-shot behaviour.
+   */
+  retries?: number;
 }
 
 function fakeStep(options: FakeStepOptions = {}) {
@@ -55,9 +60,17 @@ function fakeStep(options: FakeStepOptions = {}) {
     async do(name: string, a: unknown, b?: unknown): Promise<unknown> {
       const body = (typeof a === "function" ? a : b) as () => Promise<unknown>;
       ran.push(name);
-      return Object.hasOwn(options.cached ?? {}, name)
-        ? options.cached![name]
-        : await body();
+      if (Object.hasOwn(options.cached ?? {}, name))
+        return options.cached![name];
+      let last: unknown;
+      for (let attempt = 0; attempt <= (options.retries ?? 0); attempt++) {
+        try {
+          return await body();
+        } catch (err) {
+          last = err;
+        }
+      }
+      throw last;
     }
   } as unknown as WorkflowStep;
   return { step, ran };
@@ -214,6 +227,100 @@ describe("the ordinary path", () => {
     await runHandleTask(params(), step, deps(stub));
     expect(ran).toContain("started");
     expect(ran.indexOf("started")).toBeLessThan(ran.indexOf("turn:0"));
+  });
+});
+
+describe("a Durable Object replaced under a running workflow", () => {
+  /**
+   * The incident these two specs exist for.
+   *
+   * A deploy landed three minutes before a turn. The agent DO was collected 43
+   * seconds into `executeSubtaskChunk`, and the five retries that followed each
+   * failed in under 10ms across 160 seconds of backoff — then `fail:<id>`, the
+   * handler that exists to salvage exactly this, failed six more times the same
+   * way. The Subtask never reached a terminal row, `deliver` was never reached,
+   * and the gateway received no callback at all.
+   *
+   * Every one of those failures was a call on a stub the runtime had already
+   * severed. A broken stub does not reconnect; it rejects with the reason it
+   * broke, forever. So a run that resolves once and closes over the result has
+   * retries that cannot retry — they re-enter the body and re-call a corpse.
+   *
+   * Both specs below fail against a hoisted stub and pass against a resolver.
+   */
+
+  /** A stub whose every method rejects the way a severed one does. */
+  function severedStub() {
+    const reject = async () => {
+      throw new Error("Durable Object reset because its code was updated.");
+    };
+    return {
+      markWorking: reject,
+      runTaskTurn: reject,
+      saveTask: reject,
+      sweepTaskChildren: reject,
+      cancelPendingSubtasks: reject,
+      skipBlockedSubtasks: reject,
+      executeSubtaskChunk: reject,
+      failSubtask: reject
+    };
+  }
+
+  it("recovers on retry, because the retry resolves a live stub", async () => {
+    // The first stub handed out is already dead — the eviction happened between
+    // the namespace lookup and the call. Every later lookup gets a healthy one,
+    // which is precisely what the platform does once the new code is live.
+    const { stub, calls } = fakeAgent();
+    let resolved = 0;
+    const resolveAgent = () => {
+      resolved += 1;
+      return (resolved === 1 ? severedStub() : stub) as never;
+    };
+
+    const { step, ran } = fakeStep({
+      retries: 5,
+      cached: {
+        "turn:0": { status: "replied", reply: "the answer", turns: 1 },
+        notify: undefined
+      }
+    });
+
+    await runHandleTask(params(), step, {
+      ...deps(stub),
+      resolveAgent
+    });
+
+    // The run survived the eviction and delivered. Under a hoisted stub the
+    // severed one is the *only* one there is, so `working` exhausts its retries
+    // and the task dies before it ever reaches a model.
+    expect(calls).toContain("markWorking");
+    expect(ran).toContain("notify");
+  });
+
+  it("resolves per step body, not once per run", async () => {
+    // The property itself, stated directly: a hoisted stub resolves exactly
+    // once no matter how many steps run, so the count is the whole difference
+    // between a retry that can recover and one that cannot.
+    const { stub } = fakeAgent();
+    let resolved = 0;
+    const resolveAgent = () => {
+      resolved += 1;
+      return stub as never;
+    };
+
+    const { step } = fakeStep({
+      cached: {
+        "turn:0": { status: "replied", reply: "the answer", turns: 1 },
+        notify: undefined
+      }
+    });
+
+    await runHandleTask(params(), step, { ...deps(stub), resolveAgent });
+
+    // `working`, `complete` and `sweep` each reach the DO — `turn:0` and
+    // `notify` are served from cache here, and `started`/`deadline:0` never
+    // touch it.
+    expect(resolved).toBe(3);
   });
 });
 
