@@ -750,6 +750,40 @@ describe("restrictMainAgentTools", () => {
     }
   });
 
+  /**
+   * The silent case: a plugin that offers no main-agent surface at all. Every
+   * allowed name is missing, so every one is reported — this is what a removed
+   * or renamed `mainAgentTools` looks like, and reporting nothing would make a
+   * whole capability disappear with no trace.
+   */
+  it("logs every allowed name when the plugin has no main-agent tools at all", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const runtime = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [
+          restrictMainAgentTools(
+            definePlugin({
+              key: "surfaceless",
+              toolFamilies: { sandbox: noopFamily("sb_exec") }
+            }),
+            { allow: ["sb_read", "sb_exists"] }
+          )
+        ]
+      });
+
+      expect(await runtime.mainAgentTools(toolCtx())).toEqual({});
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/surfaceless.*sb_read/s)
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/surfaceless.*sb_exists/s)
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("does not mutate the plugin it was given", async () => {
     const original = sandboxish();
     restrictMainAgentTools(original, { allow: [] });

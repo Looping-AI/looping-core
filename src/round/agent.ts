@@ -752,8 +752,23 @@ export abstract class RoundAgentBase<
    * status. Bounded by `maxSubtasks`. Best-effort throughout: a child that
    * cannot be reached is logged, never fatal — cancellation must not fail
    * because cleanup did.
+   *
+   * The `pending` rows are transitioned here too, and that is not bookkeeping:
+   * it is the only thing that resolves them. Nothing else is coming back to a
+   * pending row once a Task is canceled — the Workflow's scheduler runs a
+   * single pass and does not re-scan, and `prepareChunk` reports a canceled
+   * Task's pending row as terminal *without* claiming it, so a branch whose RPC
+   * had not yet reached the claim when the cancellation landed simply returns.
+   * Left to the loop below, which only deletes the child, the row would sit
+   * non-terminal until the 30-day cleanup.
    */
   protected override async onTaskCanceled(taskId: string): Promise<void> {
+    // First, and outside the loop: `cancelPending` is one guarded bulk
+    // `pending -> canceled`, so it cannot be skipped by a best-effort teardown
+    // below throwing partway through, and a branch that won the claim a moment
+    // ago is left alone to resolve through `cancelRunning` on its own path.
+    this.db.subtasks.cancelPending(taskId);
+
     for (const subtask of this.db.subtasks.list(taskId)) {
       const name = subagentName(taskId, subtask.id);
       if (subtask.status !== "running") {

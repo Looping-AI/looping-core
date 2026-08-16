@@ -421,10 +421,13 @@ async function executeSubtasks(
   // `Promise.all` and strand its siblings' durable results.
   //
   // A cancellation arriving mid-pass is still honored, just not from here:
-  // `onTaskCanceled` aborts the live children, and `executeSubtaskChunk`
-  // re-checks before publishing. There are no `pending` rows left for
-  // `cancelPendingSubtasks` to reach by this point anyway — they have all been
-  // claimed.
+  // `onTaskCanceled` aborts the live children *and* transitions every row still
+  // `pending` in the same sweep, and `executeSubtaskChunk` re-checks before
+  // publishing. That transition is what lets this pass end without a second
+  // scan. Without it, a branch whose RPC had not yet claimed its row when the
+  // cancellation landed would return terminal while leaving the row `pending`,
+  // and — since the next round's turn reports `canceled` and the workflow exits
+  // — nothing would resolve it before the 30-day cleanup.
   await Promise.all(scan.ids.map((id) => runBranch(p, step, agent, id, push)));
   return "done";
 }

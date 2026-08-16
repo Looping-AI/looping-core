@@ -117,11 +117,14 @@ cannot strand in-flight runs.
 `src/platform.ts` holds time and step limits, and the one thing to know before
 touching it is that **`STEP_TIMEOUT_MS` is not a platform fact.** Ten minutes is
 Workflows' _default_ step timeout, not its ceiling; core passes its own on every
-step that can hold a model call or a container command (`LONG_STEP` in
-`round/workflow.ts`). Wall-clock per step is effectively unlimited — a step is
-bounded by CPU, and the chunk steps use milliseconds of it — so the value is a
-ceiling we choose, to turn a hung container into a retry rather than a task that
-never ends.
+step that can hold a model call or a container command. Both sites are in
+`round/workflow.ts`: `CHUNK_STEP` carries `STEP_TIMEOUT_MS` for the chunk steps,
+and `turnStep(config)` widens it to `max(mainAgentLimits.maxWallMs,
+STEP_TIMEOUT_MS)` for a round — a round has no soft deadline, so what bounds it
+is its turn count, not a chunk boundary. Wall-clock per step is effectively
+unlimited — a step is bounded by CPU, and the chunk steps use milliseconds of
+it — so the value is a ceiling we choose, to turn a hung container into a retry
+rather than a task that never ends.
 
 `CHUNK_SOFT_MS` is sized against it, and the sizing is the part that bit us. The
 soft deadline is checked **between turns**, so a turn already in flight when it

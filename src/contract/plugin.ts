@@ -389,23 +389,29 @@ export function restrictMainAgentTools<TRuntime = SubtaskRuntime>(
   if (allow.size === 0) {
     delete restricted.mainAgentTools;
   } else {
+    // Installed even when the plugin offers no `mainAgentTools` at all, rather
+    // than left `undefined`. A plugin with no main-agent surface is not the
+    // "nothing to narrow" case it looks like — it is an allowlist naming tools
+    // that do not exist, which is precisely the typo this helper promises to
+    // report, and the one shape of it that is hardest to spot: a whole surface
+    // removed or renamed disappears without a word. The assembled tool set is
+    // identical either way, because `runtime.mainAgentTools` merges each
+    // plugin's result and an empty one contributes nothing.
     const inner = plugin.mainAgentTools;
-    restricted.mainAgentTools = inner
-      ? async (ctx) => {
-          const all = await inner(ctx);
-          const kept: ToolSet = {};
-          for (const name of allow) {
-            if (name in all) kept[name] = all[name] as ToolSet[string];
-            else
-              console.error(
-                `[plugin] "${plugin.key}" offers no main-agent tool "${name}" — ` +
-                  "the allowlist names a tool that does not exist, so the main " +
-                  "agent is quietly missing it. Check for a rename."
-              );
-          }
-          return kept;
-        }
-      : undefined;
+    restricted.mainAgentTools = async (ctx) => {
+      const all = inner ? await inner(ctx) : {};
+      const kept: ToolSet = {};
+      for (const name of allow) {
+        if (name in all) kept[name] = all[name] as ToolSet[string];
+        else
+          console.error(
+            `[plugin] "${plugin.key}" offers no main-agent tool "${name}" — ` +
+              "the allowlist names a tool that does not exist, so the main " +
+              "agent is quietly missing it. Check for a rename."
+          );
+      }
+      return kept;
+    };
   }
 
   if (options.capability === undefined) delete restricted.capability;
