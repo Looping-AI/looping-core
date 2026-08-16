@@ -1271,4 +1271,111 @@ describe("errors", () => {
     expect(APICallError.isInstance(err)).toBe(false);
     expect(CredentialRejectedError.isInstance(err)).toBe(true);
   });
+
+  /**
+   * A 403 is authorization, not authentication, and the difference decides
+   * whether the fallback slot is worth spending.
+   *
+   * Anthropic answers `permission_error` when a perfectly valid credential lacks
+   * access to *this* model — an org that has not enabled it, say. Calling that a
+   * dead credential is wrong twice over: it sends an operator to rotate a
+   * working token, and it skips the one thing that could still answer, since
+   * the fallback is a **different model** and may well be permitted.
+   */
+  it("treats a 403 permission error as a normal failure the fallback can answer", async () => {
+    const err = await Promise.resolve(
+      model(
+        rejectingClient(403, {
+          type: "error",
+          error: { type: "permission_error" }
+        })
+      ).doGenerate(call(userPrompt))
+    ).catch((e: unknown) => e);
+
+    expect(CredentialRejectedError.isInstance(err)).toBe(false);
+    expect(nonRecoverableKind(err)).toBeUndefined();
+    // An APICallError, so the ladder burns this slot and moves on — which is
+    // exactly the behaviour a model-specific denial wants.
+    expect(APICallError.isInstance(err)).toBe(true);
+    expect((err as APICallError).statusCode).toBe(403);
+  });
+
+  /** A 403 that *does* name a refused credential still stops the ladder. */
+  it("still stops on a 403 that names a refused credential", async () => {
+    await expect(
+      model(rejectingClient(403, { name: "AiGatewayError" })).doGenerate(
+        call(userPrompt)
+      )
+    ).rejects.toMatchObject({
+      name: "CredentialRejectedError",
+      source: "gateway"
+    });
+  });
+
+  /**
+   * A transport failure never reaches a server, so it carries no status — and
+   * every retry path here keys on one.
+   *
+   * The SDK raises `APIConnectionError` / `APIConnectionTimeoutError` for these
+   * with `status: undefined`. Left unmapped, `ai`'s retry does not fire
+   * (`isRetryable` is derived from a status that does not exist), the client's
+   * own retries are off, and `isTransientAiError`'s fragments do not match
+   * "Connection error." — so a blip burned the primary, burned the fallback, and
+   * failed the task as `exhausted`. It has to arrive retryable.
+   */
+  it.each([["Connection error."], ["Request timed out."]])(
+    "maps the status-less transport failure %s to a retryable error",
+    async (message) => {
+      // The shape `APIError.generate` produces with no status and no headers:
+      // `status`, `headers` and `type` are all assigned, all undefined.
+      const client = {
+        messages: {
+          stream: () => ({
+            finalMessage: () =>
+              Promise.reject(
+                Object.assign(new Error(message), {
+                  status: undefined,
+                  headers: undefined,
+                  error: undefined,
+                  type: null
+                })
+              )
+          })
+        }
+      } as unknown as Anthropic;
+
+      const err = await Promise.resolve(
+        model(client).doGenerate(call(userPrompt))
+      ).catch((e: unknown) => e);
+
+      expect(APICallError.isInstance(err)).toBe(true);
+      expect((err as APICallError).isRetryable).toBe(true);
+      // Which is what puts it back on both retry paths: the SDK's own, and the
+      // Workflow step's via the transient classifier.
+      expect(isTransientAiError(err)).toBe(true);
+    }
+  );
+
+  /**
+   * The other half of that rule. A programming error thrown from the same `try`
+   * has no business being reported as a retryable provider failure — retrying a
+   * `TypeError` just spends the budget reproducing it.
+   */
+  it("leaves a non-SDK error alone rather than calling it retryable", async () => {
+    const client = {
+      messages: {
+        stream: () => ({
+          finalMessage: () =>
+            Promise.reject(new TypeError("x is not a function"))
+        })
+      }
+    } as unknown as Anthropic;
+
+    const err = await Promise.resolve(
+      model(client).doGenerate(call(userPrompt))
+    ).catch((e: unknown) => e);
+
+    expect(APICallError.isInstance(err)).toBe(false);
+    expect(err).toBeInstanceOf(TypeError);
+  });
 });

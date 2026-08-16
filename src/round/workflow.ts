@@ -171,14 +171,45 @@ type ResolveAgent = () => AgentStub;
  * own provider-level retry underneath this — and a flat five-second delay stops a
  * fast, permanent failure from being paid for at exponential rates.
  *
- * Deliberately applied only to `turn:` and the chunk steps. The short bookkeeping
- * steps (`working`, `deadline:`, `scan:`, `complete`, `notify`) are sub-second
- * projections where the defaults are fine and a shared config would only hide that.
+ * Deliberately applied only to the chunk steps — see {@link turnStep} for why a
+ * round does not share it. The short bookkeeping steps (`working`, `deadline:`,
+ * `scan:`, `complete`, `notify`) are sub-second projections where the defaults
+ * are fine and a shared config would only hide that.
  */
-const LONG_STEP: WorkflowStepConfig = {
+const CHUNK_STEP: WorkflowStepConfig = {
   timeout: STEP_TIMEOUT_MS,
   retries: { limit: 3, delay: 5_000, backoff: "constant" }
 };
+
+/**
+ * The same retries, and a timeout a **round** can actually be measured against.
+ *
+ * A chunk and a round are bounded by different things, and sharing one constant
+ * hid that. A chunk has {@link CHUNK_SOFT_MS}: it checkpoints and hands back a
+ * fresh step, so `STEP_TIMEOUT_MS` is a ceiling it is sized to stay under. A
+ * round has no soft deadline at all — `runTurn` runs up to
+ * `mainAgentLimits.maxTurns` sequential model-plus-tool steps in one
+ * `generateText`, and its only bound is that step count. Twenty turns whose
+ * tools each take the {@link file://../platform.ts MAX_TOOL_CALL_MS} they are
+ * permitted is hours, not half an hour, so a perfectly legal round could be
+ * killed and replayed whole.
+ *
+ * So the ceiling comes from the agent's own patience: a round cannot usefully
+ * outlive the wall clock its Task is allowed, because the `deadline:` step fails
+ * the Task at that point anyway. Floored at `STEP_TIMEOUT_MS` so a deliberately
+ * tight `maxWallMs` cannot produce a step timeout shorter than the single tool
+ * call core tells hosts they may install.
+ *
+ * This remains a backstop against a hang, not a budget. What actually bounds
+ * what a round *spends* is `TurnBudget`, and what bounds the Task is
+ * `mainAgentLimits` — both of which are checked whatever this says.
+ */
+function turnStep(config: CoreConfig): WorkflowStepConfig {
+  return {
+    ...CHUNK_STEP,
+    timeout: Math.max(config.mainAgentLimits.maxWallMs, STEP_TIMEOUT_MS)
+  };
+}
 
 /**
  * The orchestration itself, split from the `WorkflowEntrypoint` wiring so it can
@@ -273,34 +304,38 @@ export async function runHandleTask(
     // durable work to fall back on) and routes to failed delivery; a transient
     // fault throws and the step retries, recovering from the durable rows with no
     // second inference.
-    const turn = await step.do(`turn:${round}`, LONG_STEP, async () => {
-      // Projected to a plain object: an RPC return carries a `Disposable` brand a
-      // step result cannot serialize. Every branch must carry `turns` — a field
-      // this projection drops is a field the budget never sees.
-      const result = await agent().runTaskTurn({
-        taskId: p.taskId,
-        text: p.text,
-        identity: p.identity,
-        round,
-        mode,
-        turnsRemaining: limits.maxTurns - turnsUsed,
-        push
-      });
-      if (result.status === "replied")
-        return {
-          status: result.status,
-          reply: result.reply,
-          turns: result.turns
-        };
-      if (result.status === "failed")
-        return {
-          status: result.status,
-          kind: result.kind,
-          error: result.error,
-          turns: result.turns
-        };
-      return { status: result.status, turns: result.turns };
-    });
+    const turn = await step.do(
+      `turn:${round}`,
+      turnStep(deps.config),
+      async () => {
+        // Projected to a plain object: an RPC return carries a `Disposable` brand a
+        // step result cannot serialize. Every branch must carry `turns` — a field
+        // this projection drops is a field the budget never sees.
+        const result = await agent().runTaskTurn({
+          taskId: p.taskId,
+          text: p.text,
+          identity: p.identity,
+          round,
+          mode,
+          turnsRemaining: limits.maxTurns - turnsUsed,
+          push
+        });
+        if (result.status === "replied")
+          return {
+            status: result.status,
+            reply: result.reply,
+            turns: result.turns
+          };
+        if (result.status === "failed")
+          return {
+            status: result.status,
+            kind: result.kind,
+            error: result.error,
+            turns: result.turns
+          };
+        return { status: result.status, turns: result.turns };
+      }
+    );
 
     turnsUsed += turn.turns;
 
@@ -402,7 +437,7 @@ async function executeSubtasks(
  * `done` on chunk 0 (step `execute:<id>`); a long recipe yields `done: false` and
  * the loop runs the next chunk (`execute:<id>:chunk:<n>`) until it terminates.
  * Each chunk is its own retryable step, and the child resumes from its
- * checkpoint — so no step approaches the {@link LONG_STEP} timeout. `CHUNK_SOFT_MS`
+ * checkpoint — so no step approaches the {@link CHUNK_STEP} timeout. `CHUNK_SOFT_MS`
  * is what holds that true, and is sized against it rather than the other way
  * round; a boundary here is not free, so it wants to be rare, not frequent.
  *
@@ -435,7 +470,7 @@ async function runBranch(
       // replay identically; later chunks append `:chunk:<n>`.
       const stepName =
         chunk === 0 ? `execute:${id}` : `execute:${id}:chunk:${chunk}`;
-      const done = await step.do(stepName, LONG_STEP, async () => {
+      const done = await step.do(stepName, CHUNK_STEP, async () => {
         // The DO posts any progress itself; the step returns only the verdict.
         const outcome = await agent().executeSubtaskChunk(id, chunk, push);
         return outcome.done;

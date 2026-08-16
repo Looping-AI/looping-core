@@ -208,19 +208,23 @@ function mapContent(
  * ```
  *
  * Matched on `name` **or** `internalCode`, because either alone is a single
- * upstream rename away from silently falling through to `"unknown"`.
+ * upstream rename away from silently falling through.
  *
  * A deployment that puts its own intermediary between the two supplies
  * {@link AnthropicModelDeps.classifyAuthFailure}, which is consulted first —
  * that body's shape is the deployment's fact, not core's.
+ *
+ * `undefined` means "nothing here says a credential was refused", which is
+ * distinct from `"unknown"` — see {@link asCredentialError}, where the two
+ * differ by status.
  */
 function rejectedBy(
   body: unknown,
   classify: AnthropicModelDeps["classifyAuthFailure"]
-): CredentialRejectedBy {
+): CredentialRejectedBy | undefined {
   const declared = classify?.(body);
   if (declared) return declared;
-  if (typeof body !== "object" || body === null) return "unknown";
+  if (typeof body !== "object" || body === null) return undefined;
   const parsed = body as {
     name?: unknown;
     internalCode?: unknown;
@@ -229,7 +233,7 @@ function rejectedBy(
   if (parsed.name === "AiGatewayError" || parsed.internalCode === 2009)
     return "gateway";
   if (parsed.error?.type === "authentication_error") return "provider";
-  return "unknown";
+  return undefined;
 }
 
 /**
@@ -283,26 +287,69 @@ function asApiCallError(
   err: unknown,
   body: Anthropic.MessageStreamParams
 ): APICallError | undefined {
-  const status = (err as { status?: unknown } | null)?.status;
-  if (typeof status !== "number") return undefined;
   const source = err as {
+    status?: unknown;
     message?: string;
     headers?: unknown;
     error?: unknown;
+    type?: unknown;
     request_id?: string;
-  };
+  } | null;
+  const status = source?.status;
+  // The gateway's provider-native URL is resolved per call inside the client, so
+  // the adapter does not hold it. The model id is the useful half anyway.
+  const url = `anthropic:messages:${body.model}`;
+
+  if (typeof status !== "number") {
+    // A transport failure: the request never reached a server that could answer
+    // with a status. The SDK raises `APIConnectionError` /
+    // `APIConnectionTimeoutError` for these, both built by `APIError.generate`
+    // with an explicitly `undefined` status — which is the shape matched below,
+    // since the SDK sets no distinguishing `name` and is an optional peer whose
+    // classes may exist twice in one bundle.
+    //
+    // Mapping it matters because *nothing else* would retry it. The client runs
+    // with `maxRetries: 0`, `isRetryable` is derived from a status this error
+    // does not have, and the message — "Connection error." — matches none of
+    // `isTransientAiError`'s fragments. A blip therefore burned the primary,
+    // burned the fallback, and failed the task as `exhausted`.
+    if (!isSdkError(source)) return undefined;
+    return new APICallError({
+      message: source?.message ?? "Anthropic request failed to connect",
+      url,
+      requestBodyValues: body as unknown as Record<string, unknown>,
+      // Explicit, because there is no status to derive it from. A connection
+      // that never opened is the definition of worth trying again.
+      isRetryable: true,
+      cause: err
+    });
+  }
+
   return new APICallError({
-    message: source.message ?? `Anthropic request failed with ${status}`,
-    // The gateway's provider-native URL is resolved per call inside the client,
-    // so the adapter does not hold it. The model id is the useful half anyway.
-    url: `anthropic:messages:${body.model}`,
+    message: source?.message ?? `Anthropic request failed with ${status}`,
+    url,
     requestBodyValues: body as unknown as Record<string, unknown>,
     statusCode: status,
-    responseHeaders: plainHeaders(source.headers),
+    responseHeaders: plainHeaders(source?.headers),
     responseBody:
-      source.error === undefined ? undefined : JSON.stringify(source.error),
+      source?.error === undefined ? undefined : JSON.stringify(source.error),
     cause: err
   });
+}
+
+/**
+ * Whether this came out of the Anthropic SDK at all, as opposed to being a
+ * programming error thrown from the same `try`.
+ *
+ * `APIError` assigns `status` and `type` unconditionally, so both are **own
+ * properties even when undefined** — which is what separates a status-less
+ * transport failure from a `TypeError`. Deliberately not `instanceof`: the SDK
+ * is an optional peer and a bundle may hold two copies.
+ */
+function isSdkError(err: unknown): err is { message?: string } {
+  return (
+    err instanceof Error && "status" in err && "type" in err && "headers" in err
+  );
 }
 
 /**
@@ -311,6 +358,21 @@ function asApiCallError(
  * Structural rather than `instanceof Anthropic.AuthenticationError`: the SDK is
  * an optional peer, so a bundle can hold two copies, and this must not depend on
  * which one threw.
+ *
+ * ## Why 401 and 403 are not treated alike
+ *
+ * A `401` **is** an authentication failure — that is what the status means — so
+ * an unrecognised body still yields `"unknown"`, which is the honest answer and
+ * still stops the ladder.
+ *
+ * A `403` is authorization, and Anthropic uses it for `permission_error`: a
+ * perfectly valid credential that lacks access to *this* model or resource.
+ * Reporting that as a dead credential is doubly wrong — it sends an operator to
+ * rotate a working token, and it skips the fallback slot, which is the one thing
+ * that could still answer, because the fallback is a **different model** and may
+ * well be permitted. So a `403` counts only when the body positively names a
+ * refused credential; anything else falls through to {@link asApiCallError} and
+ * the fallback is tried as usual.
  */
 function asCredentialError(
   err: unknown,
@@ -319,11 +381,19 @@ function asCredentialError(
   if (CredentialRejectedError.isInstance(err)) return err;
   const status = (err as { status?: unknown } | null)?.status;
   if (status !== 401 && status !== 403) return undefined;
+
+  const source = rejectedBy(
+    (err as { error?: unknown } | null)?.error,
+    classify
+  );
+  // A 403 nobody claimed is a permission problem, not a credential one.
+  if (source === undefined && status === 403) return undefined;
+
   const message =
     err instanceof Error ? err.message : "a credential was rejected";
   return new CredentialRejectedError(message, {
-    status: status as number,
-    source: rejectedBy((err as { error?: unknown } | null)?.error, classify),
+    status,
+    source: source ?? "unknown",
     cause: err
   });
 }

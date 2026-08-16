@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { nonBlank } from "../subtasks/decomposition.js";
 
@@ -51,7 +51,24 @@ export const finalReplyInputSchema = z.object({
  * text-only by design). The tool exists to constrain *generation*, not to become a
  * new shape in the transcript.
  */
-export const finalReplyTool = tool({
+/*
+ * Annotated, not inferred, and the annotation is a **packaging** constraint
+ * rather than a style choice.
+ *
+ * `tool()` returns `Tool<Input, Output, Context>`, and `Context` lives in
+ * `@ai-sdk/provider-utils` — an internal of `ai`, which resolves it as a nested
+ * copy. Left inferred, `tsc` emits `import("@ai-sdk/provider-utils").Context`
+ * into this module's `.d.ts`, so every consumer typechecking
+ * `@loopingai/core/agent` needs a package this one does not declare and cannot
+ * usefully declare: pinning it here installs a *second*, different major
+ * alongside `ai`'s own, and TypeScript then refuses the reference outright as
+ * unportable.
+ *
+ * Naming the type through `ai`'s own re-export keeps the emitted declaration
+ * pointing at a package that is already a required peer. `verify:exports` walks
+ * the declaration graph for exactly this.
+ */
+export const finalReplyTool: Tool<{ text: string }> = tool({
   description:
     "Answer the user and end this round. Use this whenever the request is yours to answer — anything about this conversation, your own history, memory, or tools, and anything you can settle with the tools available to you here, including work that has already come back to you.",
   inputSchema: finalReplyInputSchema
