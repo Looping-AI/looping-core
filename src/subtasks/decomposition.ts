@@ -16,16 +16,15 @@ import type {
  * reference catalog it was generated against, this either produces the drafts to
  * persist or throws.
  *
- * Two invariants live here:
+ * One invariant lives here: **the model selects references by index only.** It
+ * emits catalog indices; this module copies the catalog entry's exact role+text
+ * onto the draft. Model output never becomes reference text, so a Subtask cannot
+ * carry a rewritten, summarized, or fabricated "quote" of the conversation.
  *
- * - **The model selects references by index only.** It emits catalog indices; this
- *   module copies the catalog entry's exact role+text onto the draft. Model output
- *   never becomes reference text, so a Subtask cannot carry a rewritten,
- *   summarized, or fabricated "quote" of the conversation.
- * - **The dependency graph is a validated DAG.** Unknown, duplicate,
- *   self-referential, and cyclic edges are all rejected here. The data layer's
- *   `createDecomposition` re-checks the cheap structural rules as a storage guard,
- *   but full cycle detection is this module's job.
+ * A proposal's subtasks are **independent of one another**: they all run at once
+ * and none can read another's output, so there is no graph to validate and
+ * nothing to order. Sequencing is expressed across rounds instead — the main
+ * agent delegates, reads the results, and delegates the next step.
  *
  * Invalid output is never repaired: a throw fails the attempt, which falls back to
  * the other model, and two failed attempts fail the parent Task. Silently
@@ -52,12 +51,11 @@ export class DecompositionValidationError extends Error {
  * constraint reaches the model as part of the tool schema, on every field, with
  * no per-field `.describe()` needed to restate it.
  *
- * Being shown a rule is not the same as being held to it, and the difference used
- * to be a hole. This schema reaches the model through a **control** tool, which has
- * no `execute` — so the SDK's input validation never ran on it, and a blank value
- * the model was shown the pattern for sailed through anyway. What enforces it is
- * {@link file://../control.ts control.ts}, which parses every control call with its
- * own schema before the round uses it.
+ * Being shown a rule is not the same as being held to it. This schema reaches
+ * the model through a **control** tool, which has no `execute`, so the SDK never
+ * validates its input — what enforces the constraint is
+ * {@link file://../agent/control.ts control.ts}, which parses every control call
+ * with the tool's own schema before the round uses it.
  */
 export const nonBlank = (label: string) =>
   z
@@ -67,13 +65,11 @@ export const nonBlank = (label: string) =>
 
 function makeSubtaskProposalSchema(types: SubtaskTypeRegistry) {
   return z.object({
-    localKey: nonBlank("localKey"),
     // A closed enum, not prose: an invented type is rejected by the tool schema
     // itself rather than silently resolving to some default recipe.
     type: z.enum(types.enumKeys()),
     prompt: nonBlank("prompt"),
     referenceIndexes: z.array(z.number().int().min(1)).optional(),
-    dependsOn: z.array(nonBlank("dependsOn entry")),
     /**
      * The type's required inputs — ids the model quotes from a tool result.
      * Every key any type declares is named here, gathered from those types by
@@ -114,40 +110,17 @@ export function makeDecompositionProposalSchema(
 }
 
 /**
- * Reject an edge set that contains a cycle, by Kahn's algorithm over the
- * draft-local keys: repeatedly remove nodes with no unresolved prerequisites; if
- * any node survives, it is part of (or downstream of) a cycle.
- */
-function assertAcyclic(proposal: DecompositionProposal): void {
-  const remaining = new Map<string, Set<string>>(
-    proposal.subtasks.map((s) => [s.localKey, new Set(s.dependsOn)])
-  );
-  let progressed = true;
-  while (progressed && remaining.size > 0) {
-    progressed = false;
-    for (const [key, deps] of remaining) {
-      // Ready when every prerequisite has already been removed.
-      if ([...deps].every((d) => !remaining.has(d))) {
-        remaining.delete(key);
-        progressed = true;
-      }
-    }
-  }
-  if (remaining.size > 0) {
-    throw new DecompositionValidationError(
-      `dependency cycle among subtasks: ${[...remaining.keys()].join(", ")}`
-    );
-  }
-}
-
-/**
  * Snapshot the selected catalog entries onto a draft: validate every index against
  * the catalog, reject duplicates, and copy each entry's exact role+text. Indexes
  * are stored ascending so a Subtask's references read in conversation order
  * regardless of the order the model listed them.
+ *
+ * `label` names the offending subtask by its 1-based position in the proposal —
+ * the only handle a subtask has, and the one the model can map back to what it
+ * just wrote.
  */
 function resolveReferences(
-  localKey: string,
+  label: string,
   referenceIndexes: number[] | undefined,
   catalog: ReferenceCatalogEntry[]
 ): SubtaskReference[] {
@@ -156,13 +129,13 @@ function resolveReferences(
   for (const index of referenceIndexes) {
     if (seen.has(index)) {
       throw new DecompositionValidationError(
-        `subtask ${localKey} references index ${index} more than once`
+        `${label} references index ${index} more than once`
       );
     }
     seen.add(index);
     if (index > catalog.length) {
       throw new DecompositionValidationError(
-        `subtask ${localKey} references unknown catalog index ${index} ` +
+        `${label} references unknown catalog index ${index} ` +
           `(catalog has ${catalog.length} ${catalog.length === 1 ? "entry" : "entries"})`
       );
     }
@@ -180,52 +153,17 @@ function resolveReferences(
  * Resolve a validated model proposal into the drafts to persist.
  *
  * Throws {@link DecompositionValidationError} on any structural problem: blank
- * fields, duplicate local keys, unknown/duplicate reference indices, and unknown,
- * duplicate, self-referential, or cyclic dependency edges. On success, array order
- * is preserved — the data layer derives each Subtask's `ordinal` from it.
+ * fields, unknown or duplicate reference indices, and params a type refuses. On
+ * success, array order is preserved — the data layer derives each Subtask's
+ * `ordinal` from it.
  */
 export function resolveDecomposition(
   proposal: DecompositionProposal,
   catalog: ReferenceCatalogEntry[],
   types: SubtaskTypeRegistry
 ): { reply: string; drafts: SubtaskDraft[] } {
-  const keys = new Set<string>();
-  for (const s of proposal.subtasks) {
-    if (keys.has(s.localKey)) {
-      throw new DecompositionValidationError(
-        `duplicate subtask local key: ${s.localKey}`
-      );
-    }
-    keys.add(s.localKey);
-  }
-
-  // Every key must be registered before any edge is checked: an edge may point
-  // forward to a subtask defined later in the array.
-  for (const s of proposal.subtasks) {
-    const seen = new Set<string>();
-    for (const dep of s.dependsOn) {
-      if (dep === s.localKey) {
-        throw new DecompositionValidationError(
-          `subtask ${s.localKey} depends on itself`
-        );
-      }
-      if (!keys.has(dep)) {
-        throw new DecompositionValidationError(
-          `subtask ${s.localKey} depends on unknown key: ${dep}`
-        );
-      }
-      if (seen.has(dep)) {
-        throw new DecompositionValidationError(
-          `subtask ${s.localKey} depends on ${dep} more than once`
-        );
-      }
-      seen.add(dep);
-    }
-  }
-
-  assertAcyclic(proposal);
-
-  const drafts: SubtaskDraft[] = proposal.subtasks.map((s) => {
+  const drafts: SubtaskDraft[] = proposal.subtasks.map((s, index) => {
+    const label = `subtask ${index + 1}`;
     const type = s.type.trim();
     let params;
     try {
@@ -234,16 +172,12 @@ export function resolveDecomposition(
       params = types.validateParams(type, s.params);
     } catch (err) {
       if (!(err instanceof SubtaskParamsError)) throw err;
-      throw new DecompositionValidationError(
-        `subtask ${s.localKey}: ${err.message}`
-      );
+      throw new DecompositionValidationError(`${label}: ${err.message}`);
     }
     return {
-      localKey: s.localKey,
       type,
       prompt: s.prompt.trim(),
-      references: resolveReferences(s.localKey, s.referenceIndexes, catalog),
-      dependsOn: [...s.dependsOn],
+      references: resolveReferences(label, s.referenceIndexes, catalog),
       params
     };
   });

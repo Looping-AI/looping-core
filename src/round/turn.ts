@@ -20,7 +20,9 @@ import {
 import {
   buildIntermediateContentHandler,
   isTransientAiError,
-  type OnContent
+  nonRecoverableKind,
+  type OnContent,
+  type RoundFailureKind
 } from "../agent/inference.js";
 import {
   controlTools,
@@ -49,7 +51,7 @@ import type { RoundPolicy } from "./policy.js";
  * Session that ends in one of two decisions — answer the user, or delegate.
  *
  * This is the whole task pipeline's control point. The Workflow runs rounds in a
- * loop: a round that delegates gets its Subtask DAG executed and is followed by
+ * loop: a round that delegates gets its Subtasks executed and is followed by
  * another round; a round that answers ends the Task. So "compose" is not a
  * separate phase with its own rules — it is simply the round in which the model
  * decides it has enough to answer.
@@ -78,12 +80,8 @@ import type { RoundPolicy } from "./policy.js";
  * delegating twice is allowed.
  *
  * What *is* forced is that the round end in a control call at all —
- * `toolChoice: "required"`, with both endings declared as tools. Plain text used to
- * be an outcome, and it made narration indistinguishable from an answer: a model
- * that wrote "I'll start the game" and emitted no call ended the Task successfully
- * having done nothing. Two named tools is also a much easier discrimination for a
- * small model than prose-versus-tool, which is what the weaker fallback models
- * consistently got wrong.
+ * `toolChoice: "required"`, with both endings declared as tools. Prose is not an
+ * outcome: see {@link file://../agent/final-reply.ts final-reply.ts} for why not.
  *
  * Narration survived that fix by moving house. A round whose results have just come
  * back can still announce its next step *inside* a `final_reply` — "now sending the
@@ -364,6 +362,8 @@ export interface RunTurnArgs {
   maxSubtasks: number;
   /** `CoreConfig.model.maxOutputTokens`. */
   maxOutputTokens: number;
+  /** `CoreConfig.model.maxRetries` — retries on *this* model before the fallback. */
+  maxRetries: number;
   /** The prompt suffixes, memoized by the DO. See {@link buildTurnInstructions}. */
   instructions: TurnInstructions;
   /** The note a deterministic join appends when it has to disclose gaps. */
@@ -373,10 +373,17 @@ export interface RunTurnArgs {
 }
 
 /**
- * Terminal outcome of one round. `failed` means both models produced unusable
- * output *and* there was no durable work to fall back on — the parent Task fails
- * rather than running a synthesized subtask nobody asked for. Transient faults
- * throw instead (the Workflow step retries).
+ * Terminal outcome of one round. `failed` means the round produced no answer and
+ * there was no durable work to fall back on — the parent Task fails rather than
+ * running a synthesized subtask nobody asked for. Transient faults throw instead
+ * (the Workflow step retries).
+ *
+ * `kind` is *why*, not a second outcome. The round is over either way and the
+ * Task it delivers has the same shape; what the kind decides is what a human is
+ * told — `exhausted` is "the models could not do it", a credential kind is "a
+ * human must fix the deployment". Both were once separate statuses, and every
+ * consumer promptly bundled them back together to do the same three things. See
+ * {@link RoundFailureKind}.
  *
  * What the round cost is not here: it is in the caller's `TurnBudget`, which every
  * exit has already charged — including the ones that failed. A round that burned
@@ -386,7 +393,7 @@ export interface RunTurnArgs {
 export type RunTurnOutcome =
   | { status: "replied"; reply: string }
   | { status: "delegated"; reply: string; drafts: SubtaskDraft[] }
-  | { status: "failed"; error: string };
+  | { status: "failed"; kind: RoundFailureKind; error: string };
 
 /**
  * A control call the round refused, kept so it can be handed back to the model
@@ -483,9 +490,12 @@ async function attempt(
         // change here.
         ...control.map((c) => hasToolCall(c.name))
       ],
-      // We do our own primary → fallback recovery, so disable the SDK's
-      // per-model backoff (it would only add latency and duplicate the fallback).
-      maxRetries: 0,
+      // Retries on *this* model before the slot is given up, honouring the
+      // provider's own `retry-after`. Not a duplicate of the fallback: the
+      // fallback answers "this model cannot do it", and a 429 says "not yet" —
+      // and when both slots share a credential the fallback cannot even answer
+      // that. See `ModelConfig.maxRetries`.
+      maxRetries: args.maxRetries,
       // Charged here rather than from `result.steps` so a throw mid-loop still
       // bills the steps already spent — the `catch` below has no `result` to read.
       onStepEnd: async (step) => {
@@ -576,9 +586,16 @@ const MAX_REPAIR_ATTEMPTS = 3;
  * The id a repaired exchange is anchored on, derived from the Task and round like
  * every other id here. Suffixed per repair, so several rejected calls can sit in
  * one attempt's messages without colliding.
+ *
+ * Underscore-separated for the same reason as
+ * {@link file://../subtasks/delegate.ts delegateToolCallId}: this reaches a
+ * provider as a `tool_use.id`, and Anthropic rejects anything outside
+ * `^[a-zA-Z0-9_-]+$`. A repair exchange is exactly the moment a round is already
+ * in trouble, so an id that 400s here turns a recoverable bad call into a dead
+ * round.
  */
 function controlCallId(taskId: string, round: number): string {
-  return `task:${taskId}:round:${round}:control`;
+  return `task_${taskId}_round_${round}_control`;
 }
 
 /**
@@ -654,7 +671,20 @@ function repairExchange(
  * Throws only on a transient platform fault (for the Workflow step to retry).
  * A deterministic failure that outlasts every repair on both slots, with durable
  * work behind it, degrades to {@link joinSuccessfulBranches} rather than discarding
- * completed branches; with nothing behind it, it resolves to `{ status: "failed" }`.
+ * completed branches; with nothing behind it, it resolves to
+ * `{ status: "failed", kind: "exhausted" }`.
+ *
+ * The third failure is neither, and it short-circuits the *model* recoveries
+ * above: a {@link nonRecoverableKind} error ends the round from wherever it
+ * happens, carrying that kind — without repairing and **without reaching the
+ * fallback slot**, both of which would only present the same dead credential
+ * again. See that function for why the transient/deterministic split cannot
+ * express it.
+ *
+ * It does **not** skip the deterministic join. That path needs no credential —
+ * it is string concatenation over rows that are already durable — so completed
+ * branches are still delivered, and the credential fault reaches the operator
+ * through the log rather than by throwing away finished work.
  */
 export async function runTurn(args: RunTurnArgs): Promise<RunTurnOutcome> {
   const { session, taskId, round, text, systemSuffix, models, branches } = args;
@@ -701,6 +731,34 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnOutcome> {
       const outcome = await attempt(args, control, model, system, slotMessages);
 
       if (!outcome.ok) {
+        // Before anything else, and before the fallback slot exists as an
+        // option: a failure nothing can clear ends the round here. Repairing
+        // asks a dead credential to try again; falling through spends the
+        // second slot presenting the *same* dead credential. Both are pure
+        // cost, and both delay the only useful outcome — telling an operator
+        // what to fix.
+        const nonRecoverable = nonRecoverableKind(outcome.error);
+        if (nonRecoverable) {
+          console.error("[turn] non-recoverable model failure", {
+            taskId,
+            round,
+            model: modelId,
+            kind: nonRecoverable,
+            error: String(outcome.error)
+          });
+          // What ends here is *inference*, not the round's ability to answer.
+          // Branches that already completed are durable rows, and joining them
+          // costs no credential — so the same rescue the exhausted path takes
+          // applies, and the operator hears about the fault from the log above.
+          const joined = await deterministicJoin(args);
+          if (joined) return joined;
+          return {
+            status: "failed",
+            kind: nonRecoverable,
+            error: String(outcome.error)
+          };
+        }
+
         errors.push(outcome.error);
         const { rejected } = outcome;
         diagnostics.push(
@@ -735,7 +793,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnOutcome> {
         ) {
           slotMessages.push(
             ...repairExchange(
-              `${controlCallId(taskId, round)}:repair:${repair}`,
+              `${controlCallId(taskId, round)}_repair_${repair}`,
               rejected,
               outcome.error
             )
@@ -783,21 +841,39 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnOutcome> {
 
   // Both models failed deterministically. Any branch results behind us are durable
   // and useful; deliver them joined rather than failing a Task whose work is done.
-  if (branches.some((b) => b.status === "completed")) {
-    console.warn("[turn] falling back to deterministic join", {
-      taskId,
-      round
-    });
-    const reply = await appendOnce(
-      session,
-      deterministicSessionMessage(
-        finalReplyMessageId(taskId),
-        "assistant",
-        joinSuccessfulBranches(branches, args.partialNote)
-      )
-    );
-    return { status: "replied", reply };
-  }
+  const joined = await deterministicJoin(args);
+  if (joined) return joined;
 
-  return { status: "failed", error: detail };
+  return { status: "failed", kind: "exhausted", error: detail };
+}
+
+/**
+ * Deliver the branch results this round already has, when no model will produce
+ * an answer over them.
+ *
+ * The one recovery on this file that needs **no** model: a filter, a join and a
+ * durable append. That is why both failure paths reach it — a ladder that ran out
+ * of attempts, and one that stopped on a fault no attempt could clear. Neither
+ * has an answer to write; both have work worth returning.
+ *
+ * `undefined` when nothing completed, which is the caller's signal to fail with
+ * its own kind. No branches means nothing to join, and a Task with no work behind
+ * it should not report success.
+ */
+async function deterministicJoin(
+  args: RunTurnArgs
+): Promise<RunTurnOutcome | undefined> {
+  const { session, taskId, round, branches } = args;
+  if (!branches.some((b) => b.status === "completed")) return undefined;
+
+  console.warn("[turn] falling back to deterministic join", { taskId, round });
+  const reply = await appendOnce(
+    session,
+    deterministicSessionMessage(
+      finalReplyMessageId(taskId),
+      "assistant",
+      joinSuccessfulBranches(branches, args.partialNote)
+    )
+  );
+  return { status: "replied", reply };
 }

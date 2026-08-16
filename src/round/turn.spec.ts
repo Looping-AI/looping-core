@@ -6,7 +6,14 @@ import type { ModelPair } from "../agent/index.js";
 import type { CompositionBranch } from "../subtasks/index.js";
 import type { SubtaskTypeSpec } from "../contract/recipe.js";
 import { FakeSession } from "../testing/fake-session.js";
-import { finalReply, mockModel } from "../testing/mock-model.js";
+import {
+  countingModel,
+  finalReply,
+  mockModel,
+  rateLimitedModel,
+  throwingModel
+} from "../testing/mock-model.js";
+import { CredentialRejectedError } from "../agent/errors.js";
 import { TEST_MODELS } from "../testing/fixtures.js";
 import {
   buildTurnInstructions,
@@ -20,19 +27,18 @@ import type { RoundPolicy } from "./policy.js";
 /**
  * The round loop.
  *
- * ## Why this file is here, and where it came from
+ * ## Why this file is here
  *
- * These assertions used to live in `looping-starter` as
- * `test/round-agent/turn.spec.ts`, back when the loop itself did. Moving the
- * loop into core deleted them and re-landed nothing, so the entire
+ * These assertions lived in looping-starter, back when the loop itself did.
+ * Moving the loop into core deleted them and re-landed nothing, so the entire
  * primary→fallback→repair ladder shipped from a published package with no
  * coverage at all — and the suite stayed green throughout, because the tests
  * left with the code they covered. That is the failure mode a refactor is most
- * prone to and least likely to notice.
+ * prone to and least likely to notice: **coverage does not move with code
+ * unless someone moves it.**
  *
- * They are restored here, adapted to the one thing that genuinely changed:
- * prompt copy is now injected as a {@link RoundPolicy} rather than written
- * inline, so the fixture below supplies it the way an agent does.
+ * Core ships no prompt copy, so the fixture below supplies a {@link RoundPolicy}
+ * the way an agent does.
  *
  * What they pin is the part with no second chance at runtime: a round that
  * reaches no ending must cost the budget it spent, fall back to the other
@@ -120,6 +126,10 @@ function args(overrides: Partial<RunTurnArgs> = {}): RunTurnArgs {
     types,
     maxSubtasks: 8,
     maxOutputTokens: 4096,
+    // Zero, so the ladder specs below count model *calls* the way they mean to:
+    // a retry is invisible to `countingModel` as anything but another call, and
+    // these assertions are about the primary→fallback→repair shape.
+    maxRetries: 0,
     instructions,
     partialNote: policy.copy.partialNote,
     ...overrides
@@ -183,6 +193,54 @@ describe("runTurn", () => {
     expect(budget.spent).toBeGreaterThanOrEqual(2);
   });
 
+  /**
+   * A rate limit is "not yet", not "this model cannot do it".
+   *
+   * The fallback slot answers the second question and is useless for the first
+   * — worse than useless when both slots sit behind one credential, which is
+   * exactly the coder's shape (Opus with Sonnet as its step-down). Production
+   * showed the cost: a 429 skipped straight to the fallback, the fallback hit
+   * the same limit, the round threw, the Workflow retried, and the pair
+   * repeated four more times over three minutes.
+   *
+   * The call counts are the assertion. The outcome is a successful reply either
+   * way, so only "which model was asked, and how many times" can tell a waited
+   * retry from a burned fallback.
+   */
+  it("retries a rate-limited model in place instead of burning the fallback", async () => {
+    const primary = rateLimitedModel(1, finalReply("the actual answer"));
+    const fallback = countingModel(finalReply("should never be reached"));
+
+    const outcome = await runTurn(
+      args({
+        maxRetries: 1,
+        models: pair(primary.model, fallback.model)
+      })
+    );
+
+    expect(outcome).toEqual({ status: "replied", reply: "the actual answer" });
+    // Once refused, once honoured — inside a single slot.
+    expect(primary.calls()).toBe(2);
+    expect(fallback.calls()).toBe(0);
+  });
+
+  /** With retries off, the same 429 spends the slot — the old behaviour. */
+  it("hands a rate limit to the fallback when retries are disabled", async () => {
+    const primary = rateLimitedModel(1, finalReply("unreachable"));
+    const fallback = countingModel(finalReply("fallback answered"));
+
+    const outcome = await runTurn(
+      args({
+        maxRetries: 0,
+        models: pair(primary.model, fallback.model)
+      })
+    );
+
+    expect(outcome).toEqual({ status: "replied", reply: "fallback answered" });
+    expect(primary.calls()).toBe(1);
+    expect(fallback.calls()).toBe(1);
+  });
+
   it("falls back to the second model when the first reaches no ending", async () => {
     const outcome = await runTurn(
       args({
@@ -205,7 +263,6 @@ describe("runTurn", () => {
         ordinal: 0,
         type: "general",
         prompt: "research",
-        dependsOn: [],
         params: {},
         status: "completed",
         resultParts: [{ kind: "text", text: "what the branch found" }],
@@ -224,7 +281,144 @@ describe("runTurn", () => {
     const outcome = await runTurn(
       args({ models: pair(mockModel({ text: "no ending" })) })
     );
-    expect(outcome.status).toBe("failed");
+    // `exhausted` is the assertion that matters: the ladder was actually run.
+    // A credential failure reaches the same status with a different kind, so
+    // the status alone no longer distinguishes them.
+    expect(outcome).toMatchObject({ status: "failed", kind: "exhausted" });
+  });
+
+  /**
+   * The behaviour four files describe and none used to implement. Classifying a
+   * rejected credential as merely "not transient" is what routes it *into* the
+   * fallback slot — so the assertion that matters is not the returned status but
+   * that the second model was never asked at all.
+   */
+  it("fails on a rejected credential without spending the fallback slot", async () => {
+    const primary = throwingModel(
+      new CredentialRejectedError("invalid bearer token", {
+        status: 401,
+        source: "provider"
+      })
+    );
+    const fallback = countingModel(finalReply("the fallback answered"));
+
+    const outcome = await runTurn(
+      args({ models: pair(primary.model, fallback.model) })
+    );
+
+    expect(outcome).toMatchObject({ status: "failed", kind: "credential" });
+    // The two that matter: one attempt, and the second slot never asked. A
+    // repair would show as primary > 1, a fallthrough as fallback > 0.
+    expect(primary.calls()).toBe(1);
+    expect(fallback.calls()).toBe(0);
+  });
+
+  /**
+   * The gateway in front of the provider has its own credential, and rejects
+   * with the same 401. Reporting that as `credential` sends an operator to
+   * rotate a Claude token that was never presented to Claude — so the kind has
+   * to survive to the host, which is the only place that knows what to say.
+   */
+  it("distinguishes a gateway rejection from a provider one", async () => {
+    const primary = throwingModel(
+      new CredentialRejectedError("401 Unauthorized", {
+        status: 401,
+        source: "gateway"
+      })
+    );
+    const fallback = countingModel(finalReply("the fallback answered"));
+
+    const outcome = await runTurn(
+      args({ models: pair(primary.model, fallback.model) })
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      kind: "gateway-credential"
+    });
+    expect(fallback.calls()).toBe(0);
+  });
+
+  /**
+   * A 401 whose body matched neither shape, including one that crossed a realm
+   * boundary and lost its `source`. Guessing here is the whole bug.
+   */
+  it("reports an unclassified rejection as unknown rather than guessing", async () => {
+    const primary = throwingModel(
+      new CredentialRejectedError("401 Unauthorized", { status: 401 })
+    );
+
+    const outcome = await runTurn(
+      args({
+        models: pair(primary.model, countingModel(finalReply("x")).model)
+      })
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      kind: "unknown-credential"
+    });
+  });
+
+  /**
+   * Durable branch results rescue this one exactly as they rescue a
+   * deterministic double failure, and for a reason that has nothing to do with
+   * the credential: the join needs no model. It filters completed rows, joins
+   * their text and appends it. So the fault stops *inference*, not the round's
+   * ability to return work that is already done — the operator hears about it
+   * from the log, and the user is not made to pay for it.
+   */
+  it("still delivers the deterministic join with completed branches behind it", async () => {
+    const branches: CompositionBranch[] = [
+      {
+        subtaskId: 1,
+        round: 0,
+        ordinal: 0,
+        type: "general",
+        prompt: "research",
+        params: {},
+        status: "completed",
+        resultParts: [{ kind: "text", text: "what the branch found" }],
+        error: null
+      }
+    ];
+    const primary = throwingModel(
+      new CredentialRejectedError("invalid bearer token", { status: 401 })
+    );
+    const fallback = countingModel(finalReply("the fallback answered"));
+
+    const outcome = await runTurn(
+      args({ branches, models: pair(primary.model, fallback.model) })
+    );
+
+    expect(outcome).toMatchObject({ status: "replied" });
+    expect((outcome as { reply: string }).reply).toContain(
+      "what the branch found"
+    );
+    // The short-circuit still holds: the join is what answered, not a second
+    // model attempt presenting the same dead credential.
+    expect(primary.calls()).toBe(1);
+    expect(fallback.calls()).toBe(0);
+  });
+
+  /**
+   * The same fault with nothing durable behind it. Here the kind is the whole
+   * output — there is no work to return, so what the round owes the operator is
+   * an accurate reason.
+   */
+  it("fails with the credential kind when no branch completed", async () => {
+    const primary = throwingModel(
+      new CredentialRejectedError("invalid bearer token", { status: 401 })
+    );
+
+    const outcome = await runTurn(
+      args({ branches: [], models: pair(primary.model) })
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      kind: "unknown-credential"
+    });
   });
 });
 
@@ -246,6 +440,48 @@ describe("renderTurnMessages", () => {
     // resolves to different text.
     expect(catalog[0]?.index).toBe(1);
   });
+
+  /**
+   * Every synthetic tool-call id core emits has to satisfy
+   * `^[a-zA-Z0-9_-]+$` — Anthropic's rule for `tool_use.id`.
+   *
+   * This is checked on the *rendered* messages rather than on
+   * `delegateToolCallId` directly, because the id only matters where it reaches
+   * a provider, and the reconstruction is what puts it there. Round 0 never
+   * exercised it (the model authors its own ids), which is exactly how a
+   * colon-separated id shipped and 400d every round from the first delegation
+   * onwards.
+   */
+  it("emits provider-safe tool-call ids when it rebuilds a delegation", async () => {
+    const session = new FakeSession();
+    await runTurn(args({ session }));
+
+    const branch: CompositionBranch = {
+      subtaskId: 1,
+      round: 0,
+      ordinal: 0,
+      type: "general",
+      prompt: "do the thing",
+      params: {},
+      status: "completed",
+      resultParts: [{ kind: "text", text: "did the thing" }],
+      error: null
+    };
+    const { messages } = renderTurnMessages(session.messages, "t1", [branch]);
+
+    const ids = messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content.flatMap((part) =>
+            part.type === "tool-call" || part.type === "tool-result"
+              ? [part.toolCallId]
+              : []
+          )
+        : []
+    );
+
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) expect(id).toMatch(/^[a-zA-Z0-9_-]+$/);
+  });
 });
 
 describe("joinSuccessfulBranches", () => {
@@ -258,7 +494,6 @@ describe("joinSuccessfulBranches", () => {
     ordinal: 0,
     type: "general",
     prompt: "p",
-    dependsOn: [],
     params: {},
     status,
     resultParts: [{ kind: "text", text }],

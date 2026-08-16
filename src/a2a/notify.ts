@@ -87,9 +87,10 @@ export function buildSubmittedTask(
 }
 
 /**
- * The terminal `completed` Task for a turn the agent deliberately did not answer
- * (it called the `no_reply` tool — see the agent loop). Same
- * shape as {@link buildSubmittedTask}: **no `status.message` at all**.
+ * The terminal `completed` Task for a turn the agent deliberately did not
+ * answer — a turn an `AgentPlugin.shouldHandleTurn` gate declined, or whatever
+ * else a host treats as "nothing to say". Same shape as
+ * {@link buildSubmittedTask}: **no `status.message` at all**.
  *
  * The callback is still POSTed. The gateway's pending row has to resolve — we
  * simply hand it nothing to post to Slack. There is no `messageId` because there

@@ -1,4 +1,9 @@
 import { MockLanguageModelV3 } from "ai/test";
+// From `ai`, not `@ai-sdk/provider`. `ai` re-exports the class and is a declared
+// peer; reaching for the provider package directly makes this module — which is
+// on the published `/testing` subpath every consumer loads — depend on a package
+// core does not declare and only resolves today by hoisting.
+import { APICallError } from "ai";
 
 /**
  * Test doubles for the LLM. Lets the tool-loop / executor specs run the real
@@ -88,4 +93,86 @@ export function mockModel(...steps: MockStep[]): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     doGenerate: async () => stepResult(steps[Math.min(i++, steps.length - 1)])
   });
+}
+
+/**
+ * A model whose every call throws, and a count of how many times it was asked.
+ *
+ * The count is the point. Several of the attempt ladder's rules are about a call
+ * that must *not* happen — a fallback slot left unspent, a repair not attempted
+ * — and those are invisible to an assertion on the returned outcome alone, which
+ * can be right for the wrong reason.
+ */
+export function throwingModel(error: unknown): {
+  model: MockLanguageModelV3;
+  calls: () => number;
+} {
+  let calls = 0;
+  return {
+    model: new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls += 1;
+        throw error;
+      }
+    }),
+    calls: () => calls
+  };
+}
+
+/** {@link mockModel}, plus the same call count {@link throwingModel} reports. */
+export function countingModel(...steps: MockStep[]): {
+  model: MockLanguageModelV3;
+  calls: () => number;
+} {
+  let calls = 0;
+  let i = 0;
+  return {
+    model: new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls += 1;
+        return stepResult(steps[Math.min(i++, steps.length - 1)]);
+      }
+    }),
+    calls: () => calls
+  };
+}
+
+/**
+ * A model that fails the first `failures` calls with a retryable `APICallError`,
+ * then behaves like {@link mockModel}.
+ *
+ * Exists for the one behaviour a scripted-outcome assertion cannot see: whether
+ * a rate limit was *waited out on the same model* or fell straight through to
+ * the fallback. Only the call count distinguishes them — both produce a
+ * successful round.
+ *
+ * `retry-after: 0` is deliberate. The AI SDK honours the header and its own
+ * backoff opens at two seconds, which would spend real seconds asserting
+ * something that has nothing to do with duration. Zero exercises the identical
+ * path — header parsed, preferred over the exponential delay, waited — for free.
+ */
+export function rateLimitedModel(
+  failures: number,
+  ...steps: MockStep[]
+): { model: MockLanguageModelV3; calls: () => number } {
+  let calls = 0;
+  let i = 0;
+  return {
+    model: new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls += 1;
+        if (calls <= failures) {
+          throw new APICallError({
+            message: "429 Wholesale Rate limited",
+            url: "anthropic:messages:test",
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { "retry-after": "0" }
+          });
+        }
+        return stepResult(steps[Math.min(i++, steps.length - 1)]);
+      }
+    }),
+    calls: () => calls
+  };
 }

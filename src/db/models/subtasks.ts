@@ -23,7 +23,6 @@ const resultPartSchema = z.object({
 
 const referencesSchema = z.array(referenceSchema);
 const resultPartsSchema = z.array(resultPartSchema);
-const dependsOnSchema = z.array(z.number().int());
 const paramsSchema = z.record(z.string(), z.string());
 
 type SubtaskRow = typeof subtasks.$inferSelect;
@@ -44,7 +43,7 @@ export interface SubtaskModelOptions {
  * durable-sqlite is synchronous; the multi-statement `createDecomposition` runs
  * inside an explicit `db.transaction` (drizzle maps it to
  * `storage.transactionSync`), so a mid-create failure rolls back every statement
- * instead of leaving a partial DAG. Guarded transitions filter on the expected
+ * instead of leaving a partial decomposition. Guarded transitions filter on the expected
  * current `status`, so a disallowed transition matches no row and is a no-op.
  */
 export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
@@ -60,7 +59,6 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
     references: referencesSchema.parse(
       JSON.parse(row.referencesJson)
     ) as SubtaskReference[],
-    dependsOn: dependsOnSchema.parse(JSON.parse(row.dependsOnJson)),
     params: paramsSchema.parse(JSON.parse(row.paramsJson)),
     status: row.status as SubtaskStatus,
     resultParts:
@@ -113,23 +111,17 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
 
   return {
     /**
-     * Create one **round's** decomposition atomically: the entire
-     * check-validate-insert sequence runs in one synchronous `db.transaction`, so
-     * a failure anywhere rolls back every statement — no truncated subtask set, no
-     * nodes left with unwritten dependency edges. Idempotent on
-     * `(taskId, round)`: if this round already has Subtasks, returns them
-     * unchanged (a Workflow-step retry must not duplicate work); the unique
-     * `(task_id, ordinal)` index is the schema-level backstop. Enforces the 1..8
-     * per-round bound, unique local keys, and resolvable non-self dependency
-     * edges, then resolves draft-local dependency keys to the SQLite-assigned
-     * {@link SubtaskId}s. Full cycle/edge DAG validation lives in the turn
-     * operation; this is the storage guard.
+     * Create one **round's** decomposition atomically: the whole check-and-insert
+     * sequence runs in one synchronous `db.transaction`, so a failure anywhere
+     * rolls back every statement rather than leaving a truncated subtask set.
+     * Idempotent on `(taskId, round)`: if this round already has Subtasks,
+     * returns them unchanged (a Workflow-step retry must not duplicate work); the
+     * unique `(task_id, ordinal)` index is the schema-level backstop. Enforces the
+     * 1..8 per-round bound as the durable guard.
      *
      * `ordinal` continues across rounds (it is the Task-wide position, and what
      * the unique index is built on), so a later round's rows sort after the
-     * earlier ones in {@link list}. Dependency edges never cross a round: each
-     * round's DAG is self-contained, and the drafts handed here only carry keys
-     * from their own round.
+     * earlier ones in {@link list}.
      */
     createDecomposition(
       taskId: string,
@@ -146,43 +138,15 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
           );
         }
 
-        // Register every local key first, rejecting duplicates. This is its own
-        // pass because the dependency check below reads the complete key set: an
-        // edge may point forward to a draft defined later, so every key must be
-        // known before any edge is validated.
-        const keys = new Set<string>();
-        for (const d of drafts) {
-          if (keys.has(d.localKey)) {
-            throw new Error(`duplicate draft local key: ${d.localKey}`);
-          }
-          keys.add(d.localKey);
-        }
-
-        for (const d of drafts) {
-          for (const dep of d.dependsOn) {
-            // A subtask cannot depend on itself.
-            if (dep === d.localKey) {
-              throw new Error(`subtask ${d.localKey} depends on itself`);
-            }
-            // Every edge must resolve to a key in this decomposition.
-            if (!keys.has(dep)) {
-              throw new Error(
-                `subtask ${d.localKey} depends on unknown key: ${dep}`
-              );
-            }
-          }
-          // References must match the persisted shape before we serialize them.
-          referencesSchema.parse(d.references);
-        }
+        // References must match the persisted shape before we serialize them.
+        for (const d of drafts) referencesSchema.parse(d.references);
 
         const now = Date.now();
-        const keyToId = new Map<string, SubtaskId>();
 
-        // Pass 1: insert nodes (deps empty for now) to assign ids. Ordinals
-        // continue above every earlier round's rows — from the current maximum,
-        // not a row count, so a gap left by {@link cleanup} deleting part of a
-        // Task cannot hand a later round an ordinal that is already taken. Both
-        // read the `(task_id, ordinal)` index; only this one stays monotonic.
+        // Ordinals continue above every earlier round's rows — from the current
+        // maximum, not a row count, so a gap left by {@link cleanup} deleting part
+        // of a Task cannot hand a later round an ordinal that is already taken.
+        // Both read the `(task_id, ordinal)` index; only this one stays monotonic.
         const highest =
           db
             .select({ max: max(subtasks.ordinal) })
@@ -191,8 +155,7 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
             .get()?.max ?? null;
         const firstOrdinal = highest === null ? 0 : highest + 1;
         drafts.forEach((d, offset) => {
-          const { id } = db
-            .insert(subtasks)
+          db.insert(subtasks)
             .values({
               taskId,
               round,
@@ -202,7 +165,6 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
               recipeVersion: null,
               prompt: d.prompt,
               referencesJson: JSON.stringify(d.references),
-              dependsOnJson: "[]",
               paramsJson: JSON.stringify(d.params ?? {}),
               status: "pending" satisfies SubtaskStatus,
               resultPartsJson: null,
@@ -211,20 +173,8 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
               updatedAt: now,
               completedAt: null
             })
-            .returning({ id: subtasks.id })
-            .get();
-          keyToId.set(d.localKey, id);
-        });
-
-        // Pass 2: rewrite dependency edges to real ids.
-        for (const d of drafts) {
-          if (d.dependsOn.length === 0) continue;
-          const ids = d.dependsOn.map((k) => keyToId.get(k) as SubtaskId);
-          db.update(subtasks)
-            .set({ dependsOnJson: JSON.stringify(ids) })
-            .where(eq(subtasks.id, keyToId.get(d.localKey) as SubtaskId))
             .run();
-        }
+        });
 
         return listRound(taskId, round);
       });
@@ -242,9 +192,10 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
     },
 
     /**
-     * List one round's Subtasks, in ordinal order — the scheduler's view. Phase 2
-     * drives a single round's DAG at a time, so it must not see a sibling round's
-     * rows; composition, by contrast, reads {@link list} across all rounds.
+     * List one round's Subtasks, in ordinal order — what the Workflow's `scan`
+     * projects. It executes a single round at a time, so it must not see a
+     * sibling round's rows; a later round, by contrast, reads {@link list}
+     * across all rounds to reunite each `delegate` call with its results.
      */
     listRound(taskId: string, round: number): Subtask[] {
       return listRound(taskId, round);
@@ -289,11 +240,10 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
      * Both sides are reachable and both must land. A child's failed result arrives
      * on a `running` row. The Workflow's last resort — `failSubtask`, once
      * `execute:<id>` has exhausted every retry — can arrive on either:
-     * `executeSubtask` may throw before its `pending -> running` claim (a
-     * dependency-invariant fault) or after it (a transient child fault). Leaving
-     * either behind strands the row: a `pending` node re-enters the next wave
-     * forever, and a `running` node blocks its dependents, which {@link skip} only
-     * propagates past *failed* prerequisites.
+     * `executeSubtask` may throw before its `pending -> running` claim (an
+     * unresolvable recipe) or after it (a transient child fault). Leaving either
+     * behind strands the row in a non-terminal state that nobody is coming back
+     * to resolve.
      *
      * Returns false once the row is terminal — a late loser to the real result.
      */
@@ -303,11 +253,6 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
         error,
         completedAt: Date.now()
       });
-    },
-
-    /** Skip a Subtask blocked by a failed/skipped dependency: guarded `pending -> skipped`. */
-    skip(id: SubtaskId): boolean {
-      return transition(id, "pending", { status: "skipped" });
     },
 
     /**

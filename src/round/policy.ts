@@ -3,8 +3,8 @@ import type { AgentLimits } from "../config.js";
 /**
  * Everything about a round loop that is **yours**, not core's.
  *
- * The round loop in this subpath is mechanism: the DAG wave scheduler, chunked
- * subagent execution, cancellation ordering, idempotent recovery, the
+ * The round loop in this subpath is mechanism: concurrent subtask execution,
+ * chunked subagent runs, cancellation ordering, idempotent recovery, the
  * primary→fallback→repair ladder. None of it varies between agents, and every
  * place it *did* vary between two agents in one repo turned out to be a bug.
  *

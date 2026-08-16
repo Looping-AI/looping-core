@@ -188,9 +188,9 @@ export interface AgentPlugin<TRuntime = SubtaskRuntime> {
    *
    * A plugin that declares a {@link subtaskType} should put its capability block
    * on the *type* instead ({@link SubtaskTypeSpec.capability}) and leave this
-   * unset — the two are rendered by different call sites, so declaring both
-   * makes the main agent read the same advice twice per round. Which is the
-   * exact failure the type's own prompt fields were introduced to end.
+   * unset. Both are rendered, so declaring both makes the main agent read the
+   * same advice twice per round — the exact failure the type's own prompt
+   * fields were introduced to end.
    */
   capability?: string;
 
@@ -313,4 +313,103 @@ export function definePlugin<TRuntime = SubtaskRuntime>(
     ...plugin,
     contractVersion: plugin.contractVersion ?? PLUGIN_CONTRACT_VERSION
   };
+}
+
+/** See {@link restrictMainAgentTools}. */
+export interface RestrictMainAgentToolsOptions {
+  /**
+   * The tool names the main agent keeps. `[]` removes the hook entirely, which
+   * is the "orchestrator with no hands" case.
+   *
+   * Names rather than a predicate, because the point is to state the surface
+   * explicitly at the install site: a reader of `plugins.ts` should be able to
+   * see what the main agent can do without opening the plugin.
+   */
+  allow: readonly string[];
+  /**
+   * What the main agent is told instead of the plugin's own
+   * {@link AgentPlugin.capability}.
+   *
+   * Required in spirit whenever `allow` is non-empty: the plugin's block
+   * describes its *whole* surface, so leaving it in place tells the model about
+   * tools it no longer has — which it then tries to call. Omit it to say
+   * nothing, which is right for `allow: []`.
+   */
+  capability?: string;
+}
+
+/**
+ * A plugin whose tool families stay registered but whose main-agent surface is
+ * narrowed, or removed.
+ *
+ * ## Why this has to exist
+ *
+ * `validateRecipe` runs on the **parent** and drops any tool family no installed
+ * plugin registered. So an agent that wants "my subagents can run a shell, I
+ * cannot" has a problem: uninstalling the sandbox plugin from the parent also
+ * deletes `sandbox` from every recipe the parent validates, and the subagents
+ * silently lose it. The parent has to install the plugin and decline its tools,
+ * which is exactly what this expresses.
+ *
+ * ```ts
+ * // The parent registers the family, and gets three read-only tools from it.
+ * restrictMainAgentTools(sandbox(cfg), {
+ *   allow: ["sb_read", "sb_ls", "sb_exists"],
+ *   capability: "You can read the checkout, not change it."
+ * })
+ * ```
+ *
+ * ## What passes through untouched
+ *
+ * Everything else: `toolFamilies`, `subtaskType`, `resolveRuntime`, `store`,
+ * `requires`, and the lifecycle hooks. In particular `requires` must survive, or
+ * a parent that stops offering `sb_exec` also stops asserting that the `Sandbox`
+ * binding exists — and the failure moves from DO start to a subagent's first
+ * tool call.
+ *
+ * ## Why a missing name logs instead of throwing
+ *
+ * `mainAgentTools` is async and called per turn, so a throw here lands inside a
+ * request someone is waiting on — a bad trade for what is always a typo. The
+ * error names the plugin and the tool so it is greppable, and the honest place
+ * to catch it is a test over the assembled surface, which is cheap to write and
+ * fails the build instead.
+ */
+export function restrictMainAgentTools<TRuntime = SubtaskRuntime>(
+  plugin: AgentPlugin<TRuntime>,
+  options: RestrictMainAgentToolsOptions
+): AgentPlugin<TRuntime> {
+  const allow = new Set(options.allow);
+
+  // Spread first so anything added to `AgentPlugin` later keeps flowing through
+  // without an edit here — the failure mode of an explicit field list is a
+  // capability that silently stops reaching the parent.
+  const restricted: AgentPlugin<TRuntime> = { ...plugin };
+
+  if (allow.size === 0) {
+    delete restricted.mainAgentTools;
+  } else {
+    const inner = plugin.mainAgentTools;
+    restricted.mainAgentTools = inner
+      ? async (ctx) => {
+          const all = await inner(ctx);
+          const kept: ToolSet = {};
+          for (const name of allow) {
+            if (name in all) kept[name] = all[name] as ToolSet[string];
+            else
+              console.error(
+                `[plugin] "${plugin.key}" offers no main-agent tool "${name}" — ` +
+                  "the allowlist names a tool that does not exist, so the main " +
+                  "agent is quietly missing it. Check for a rename."
+              );
+          }
+          return kept;
+        }
+      : undefined;
+  }
+
+  if (options.capability === undefined) delete restricted.capability;
+  else restricted.capability = options.capability;
+
+  return restricted;
 }

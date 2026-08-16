@@ -4,7 +4,7 @@ import type { SessionMessage } from "agents/experimental/memory/session";
 /**
  * Session-history glue for the agent runtime: parse the gateway-authored `<turn>`
  * provenance wrapper, and bridge between plain text and the Agents-SDK Sessions
- * store. No A2A types cross this boundary — the {@link file://../a2a/inbound.ts
+ * store. No A2A types cross this boundary — the {@link file://../a2a/parts.ts
  * A2A adapter} has already reduced the inbound message to a plain string.
  *
  * The gateway inlines a `<turn from="…" id="…" channel="…" at="…">…</turn>` tag
@@ -96,8 +96,8 @@ export function taskUserMessageId(taskId: string): string {
  * Id of the acknowledgment a **delegating** round publishes — the message the
  * user sees while that round's Subtasks run. Also the anchor a later round finds
  * to reattach the round's `delegate` call to (see
- * {@link file://./turn.ts renderTurnMessages}), which is why it is derived from
- * the round rather than stored.
+ * {@link file://../round/turn.ts renderTurnMessages}), which is why it is
+ * derived from the round rather than stored.
  */
 export function roundAckMessageId(taskId: string, round: number): string {
   return `task:${taskId}:round:${round}:ack`;

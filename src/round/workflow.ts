@@ -1,10 +1,10 @@
-import type { WorkflowStep } from "cloudflare:workers";
-import { MAX_CHUNKS_PER_BRANCH } from "../platform.js";
+import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
+import { MAX_CHUNKS_PER_BRANCH, STEP_TIMEOUT_MS } from "../platform.js";
 import type { CoreConfig } from "../config.js";
 import { buildCompletedTask, buildFailedTask } from "../a2a/notify.js";
 import { createPushChannel, type TurnPushContext } from "../a2a/push.js";
 import type { GatewayIdentity } from "../a2a/verify.js";
-import { selectWave } from "../subtasks/scheduler.js";
+import type { RoundFailureKind } from "../agent/inference.js";
 import type { SubtaskId } from "../subtasks/types.js";
 import type { RoundAgentBase } from "./agent.js";
 import type { RoundPolicy } from "./policy.js";
@@ -22,10 +22,10 @@ import type { RoundMode } from "./turn.js";
  * 1. **Round** — one main-agent inference that either answers the user (the Task
  *    is done) or delegates durable Subtasks plus the acknowledgment the user sees
  *    while they run.
- * 2. **Execute** — a delegating round's Subtask DAG runs in waves, every
- *    dependency-ready node concurrently, each in an isolated managed subagent.
- *    Then the loop returns to 1, where the model sees the results and decides
- *    again — answer, or delegate once more.
+ * 2. **Execute** — a delegating round's Subtasks all run at once, each in an
+ *    isolated managed subagent. Then the loop returns to 1, where the model sees
+ *    the results and decides again — answer, or delegate once more. Sequencing
+ *    lives here, in the loop, not inside a round.
  * 3. **Deliver** — persist the terminal Task, then POST a signed callback.
  *
  * The main agent is never forced either way. A round that has run out of budget —
@@ -87,6 +87,22 @@ export interface HandleTaskDeps {
   /** The user-facing copy. Only `copy.taskFailed` is read out here. */
   policy: RoundPolicy;
   /**
+   * Terminal copy for a round that produced no answer, by {@link
+   * RoundFailureKind} — an expired credential, models that could not do it, and
+   * whatever that union grows to cover.
+   *
+   * A hook rather than more `RoundPolicy` copy, because the useful words are
+   * deployment-specific ("run `claude setup-token`, then
+   * `wrangler secret put …`") and most agents cannot hit these conditions at
+   * all. Returning `undefined` — or omitting this — falls back to
+   * `policy.copy.taskFailed`, so an agent that does not care changes nothing,
+   * and one that only cares about *some* kinds answers for those alone.
+   *
+   * Core still owns the delivery: this supplies only the message, so the
+   * guarded write that doubles as the cancellation check stays in one place.
+   */
+  failureCopy?: (kind: RoundFailureKind, detail: string) => string | undefined;
+  /**
    * The deployment's Ed25519 private JWK, for the terminal callback. Passed
    * rather than read off a module-scope `env` so this stays a pure function of
    * its arguments — and so a Worker whose secret is named something else works
@@ -135,6 +151,36 @@ type AgentStub = DurableObjectStub<RoundAgentBase>;
 type ResolveAgent = () => AgentStub;
 
 /**
+ * What the long steps configure instead of inheriting.
+ *
+ * Both halves of this were previously left at Workflows' defaults, and both
+ * defaults were wrong for this workload.
+ *
+ * **`timeout`.** The default is ten minutes. Nothing here passed a config, so that
+ * default silently became the ceiling {@link CHUNK_SOFT_MS} was sized against —
+ * see the note on `STEP_TIMEOUT_MS` in `platform.ts` for what that cost. A step
+ * here holds a model call and its provider retries, or a container command running
+ * a project's test suite; neither fits in ten minutes reliably and neither uses
+ * meaningful CPU while it waits.
+ *
+ * **`retries`.** The default is five attempts with exponential backoff from ten
+ * seconds. The failure documented on {@link ResolveAgent} is what that produces
+ * when the fault is not transient: five retries against a severed stub, each
+ * failing in under 10ms, spread across 160 seconds of backoff that bought nothing.
+ * Three attempts still cover a genuinely transient fault — the model call has its
+ * own provider-level retry underneath this — and a flat five-second delay stops a
+ * fast, permanent failure from being paid for at exponential rates.
+ *
+ * Deliberately applied only to `turn:` and the chunk steps. The short bookkeeping
+ * steps (`working`, `deadline:`, `scan:`, `complete`, `notify`) are sub-second
+ * projections where the defaults are fine and a shared config would only hide that.
+ */
+const LONG_STEP: WorkflowStepConfig = {
+  timeout: STEP_TIMEOUT_MS,
+  retries: { limit: 3, delay: 5_000, backoff: "constant" }
+};
+
+/**
  * The orchestration itself, split from the `WorkflowEntrypoint` wiring so it can
  * be driven with a fake `step` in tests (workerd forbids constructing a
  * `WorkflowEntrypoint` outside the runtime) — and so a second agent can reuse it
@@ -146,9 +192,8 @@ type ResolveAgent = () => AgentStub;
  * references to them.
  *
  * **Step names are durable cache keys.** Everything inside the round loop carries
- * its round for that reason: `turn:<round>`, `deadline:<round>`,
- * `scan:<round>:<wave>`, `cancel:<round>:<wave>`. Renaming one silently re-runs
- * its effect on replay.
+ * its round for that reason: `turn:<round>`, `deadline:<round>`, `scan:<round>`,
+ * `cancel:<round>`. Renaming one silently re-runs its effect on replay.
  */
 export async function runHandleTask(
   p: HandleTaskParams,
@@ -228,7 +273,7 @@ export async function runHandleTask(
     // durable work to fall back on) and routes to failed delivery; a transient
     // fault throws and the step retries, recovering from the durable rows with no
     // second inference.
-    const turn = await step.do(`turn:${round}`, async () => {
+    const turn = await step.do(`turn:${round}`, LONG_STEP, async () => {
       // Projected to a plain object: an RPC return carries a `Disposable` brand a
       // step result cannot serialize. Every branch must carry `turns` — a field
       // this projection drops is a field the budget never sees.
@@ -250,6 +295,7 @@ export async function runHandleTask(
       if (result.status === "failed")
         return {
           status: result.status,
+          kind: result.kind,
           error: result.error,
           turns: result.turns
         };
@@ -259,13 +305,22 @@ export async function runHandleTask(
     turnsUsed += turn.turns;
 
     if (turn.status === "canceled") return;
+    // The round produced no answer. `kind` is the whole difference between the
+    // two ways that happens — models that could not do it, versus a fault that
+    // stopped the round on its first attempt and that only a human can clear —
+    // and it exists to be turned into words the reader can act on. Same
+    // delivery either way; the diagnostic is logged, never shown.
     if (turn.status === "failed") {
       console.error("[handle-task] round failed", {
         taskId: p.taskId,
         round,
+        kind: turn.kind,
         error: turn.error
       });
-      await deliver(p, step, agent, null, deps);
+      await deliver(p, step, agent, null, deps, {
+        kind: turn.kind,
+        detail: turn.error
+      });
       return;
     }
     if (turn.status === "replied") {
@@ -273,13 +328,10 @@ export async function runHandleTask(
       return;
     }
 
-    // Delegated: run this round's DAG, then loop and let the model decide again.
-    const executed = await executeDag(p, step, agent, round, push, deps);
+    // Delegated: run this round's Subtasks, then loop and let the model decide
+    // again.
+    const executed = await executeSubtasks(p, step, agent, round, push);
     if (executed === "canceled") return;
-    if (executed === "stuck") {
-      await deliver(p, step, agent, null, deps);
-      return;
-    }
   }
 
   // Unreachable: a `final` round is handed only `final_reply`, so it either
@@ -292,79 +344,54 @@ export async function runHandleTask(
 }
 
 /**
- * How one round's DAG ended. `stuck` is an invariant violation — see `selectWave`.
+ * Run every Subtask one round delegated, concurrently, to termination.
  *
- * No chunk count: chunks are not a budget. What a branch may spend is bounded by
- * its own Recipe's turns and wall clock, and `MAX_CHUNKS_PER_BRANCH` is only a
- * platform backstop.
+ * **One pass is the whole thing.** A round's Subtasks are independent of one
+ * another, so they are all runnable the moment they exist, and `runBranch` is
+ * contractually obliged to leave its row terminal — it resolves a deterministic
+ * failure itself and has a `fail:<id>` backstop once the retries are gone. So
+ * there is nothing left to re-scan afterwards, and no way for this to make no
+ * progress. Sequencing between units of work is the round loop's job.
+ *
+ * Both step names carry the round, because step names are durable cache keys: two
+ * rounds of the same Task reusing `scan` would replay the first round's cached
+ * answer into the second.
  */
-type DagOutcome = "done" | "canceled" | "stuck";
-
-/**
- * Drive one round's Subtask DAG to termination, one wave at a time.
- *
- * Bounded by `maxSubtasks + 1` iterations rather than looping until `done`: a
- * wave that reports `ready` always retires at least one active node, so N
- * Subtasks need at most N waves of work plus one final scan to observe `done`.
- * Exhausting the budget means the DAG stopped making progress, which is the same
- * corruption `stuck` names.
- *
- * Every step name carries the round, because step names are durable cache keys:
- * two rounds of the same Task reusing `scan:0` would replay the first round's
- * cached answer into the second.
- */
-async function executeDag(
+async function executeSubtasks(
   p: HandleTaskParams,
   step: WorkflowStep,
   agent: ResolveAgent,
   round: number,
-  push: TurnPushContext,
-  deps: HandleTaskDeps
-): Promise<DagOutcome> {
-  for (let wave = 0; wave <= deps.config.maxSubtasks; wave++) {
-    // One durable step per wave: `skipBlockedSubtasks` reports cancellation,
-    // propagates skips past any branch that just failed, and returns the
-    // refreshed DAG projection — one round trip, one consistent answer.
-    const scan = await step.do(`scan:${round}:${wave}`, async () => {
-      const result = await agent().skipBlockedSubtasks(p.taskId, round);
-      return result.canceled
-        ? { canceled: true as const, nodes: [] }
-        : { canceled: false as const, nodes: result.nodes };
+  push: TurnPushContext
+): Promise<"done" | "canceled"> {
+  // One durable step: `scanSubtasks` reports cancellation and returns the ids
+  // still owing an outcome — one round trip, one consistent answer. It writes
+  // nothing, so a replay that re-runs it costs only the read.
+  const scan = await step.do(`scan:${round}`, async () => {
+    const result = await agent().scanSubtasks(p.taskId, round);
+    return result.canceled
+      ? { canceled: true as const, ids: [] }
+      : { canceled: false as const, ids: result.ids };
+  });
+
+  if (scan.canceled) {
+    await step.do(`cancel:${round}`, async () => {
+      await agent().cancelPendingSubtasks(p.taskId);
     });
-
-    if (scan.canceled) {
-      await step.do(`cancel:${round}:${wave}`, async () => {
-        await agent().cancelPendingSubtasks(p.taskId);
-      });
-      return "canceled";
-    }
-
-    const decision = selectWave(scan.nodes);
-    if (decision.kind === "done") return "done";
-    if (decision.kind === "stuck") {
-      console.error("[handle-task] subtask DAG made no progress", {
-        taskId: p.taskId,
-        round,
-        wave,
-        active: decision.active
-      });
-      return "stuck";
-    }
-
-    // Every dependency-ready node runs concurrently — the per-round Subtask
-    // maximum is the only fan-out bound. `runBranch` never rejects, so a single
-    // branch cannot fast-fail `Promise.all` and strand its siblings' durable
-    // results.
-    await Promise.all(
-      decision.ids.map((id) => runBranch(p, step, agent, id, push))
-    );
+    return "canceled";
   }
 
-  console.error("[handle-task] subtask DAG exceeded its wave budget", {
-    taskId: p.taskId,
-    round
-  });
-  return "stuck";
+  // Every Subtask runs concurrently — the per-round Subtask maximum is the only
+  // fan-out bound. `runBranch` never rejects, so a single branch cannot fast-fail
+  // `Promise.all` and strand its siblings' durable results.
+  //
+  // A cancellation arriving mid-pass is still honored, just not from here:
+  // `onTaskCanceled` aborts the live children, and `executeSubtaskChunk`
+  // re-checks before publishing. There are no `pending` rows left for
+  // `cancelPendingSubtasks` to reach by this point anyway — they have all been
+  // claimed.
+  await Promise.all(scan.ids.map((id) => runBranch(p, step, agent, id, push)));
+  return "done";
 }
 
 /**
@@ -375,7 +402,9 @@ async function executeDag(
  * `done` on chunk 0 (step `execute:<id>`); a long recipe yields `done: false` and
  * the loop runs the next chunk (`execute:<id>:chunk:<n>`) until it terminates.
  * Each chunk is its own retryable step, and the child resumes from its
- * checkpoint — so no step approaches the platform timeout.
+ * checkpoint — so no step approaches the {@link LONG_STEP} timeout. `CHUNK_SOFT_MS`
+ * is what holds that true, and is sized against it rather than the other way
+ * round; a boundary here is not free, so it wants to be rare, not frequent.
  *
  * It resolves a deterministic branch failure into a `failed` row itself and
  * throws only on a transient fault (retry me) or a lifecycle bug. So a throw that
@@ -406,7 +435,7 @@ async function runBranch(
       // replay identically; later chunks append `:chunk:<n>`.
       const stepName =
         chunk === 0 ? `execute:${id}` : `execute:${id}:chunk:${chunk}`;
-      const done = await step.do(stepName, async () => {
+      const done = await step.do(stepName, LONG_STEP, async () => {
         // The DO posts any progress itself; the step returns only the verdict.
         const outcome = await agent().executeSubtaskChunk(id, chunk, push);
         return outcome.done;
@@ -443,7 +472,13 @@ async function runBranch(
 /**
  * Persist the terminal Task, then notify the gateway. A null `reply` delivers a
  * `failed` Task with the policy's user-safe text; the diagnostic is already
- * logged.
+ * logged. Given a `failure`, the host's {@link HandleTaskDeps.failureCopy} may
+ * replace that text — same delivery, different words.
+ *
+ * `failure` is optional because only a round's own inference carries a kind. The
+ * other path here — a budget that ran out mid-delegation — is not a model failure
+ * and is deliberately not given a kind of its own until something needs to tell
+ * it apart.
  *
  * The Task is built **inside** the step and returned, so `notify` posts exactly
  * what was persisted: building it in the body would re-stamp `new Date()` on
@@ -461,13 +496,20 @@ async function deliver(
   step: WorkflowStep,
   agent: ResolveAgent,
   reply: string | null,
-  deps: HandleTaskDeps
+  deps: HandleTaskDeps,
+  failure?: { kind: RoundFailureKind; detail: string }
 ): Promise<void> {
+  // Resolved outside the step body so a replay cannot take a different branch
+  // than the write it is replaying.
+  const failedText =
+    (failure && deps.failureCopy?.(failure.kind, failure.detail)) ||
+    deps.policy.copy.taskFailed;
+
   const task = await step.do("complete", async () => {
     const terminal =
       reply !== null
         ? buildCompletedTask(p.taskId, p.contextId, reply)
-        : buildFailedTask(p.taskId, p.contextId, deps.policy.copy.taskFailed);
+        : buildFailedTask(p.taskId, p.contextId, failedText);
     return (await agent().saveTask(terminal)) ? terminal : null;
   });
   if (!task) return;

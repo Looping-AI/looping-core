@@ -5,7 +5,8 @@ import type { AgentPlugin } from "../contract/plugin.js";
 import {
   resolveConfig,
   type CoreConfig,
-  type CoreConfigOverrides
+  type CoreConfigOverrides,
+  type ModelConfig
 } from "../config.js";
 import type { A2ASecretsEnv, AiEnv } from "../env.js";
 import { AgentDB, stateOf } from "../db/index.js";
@@ -19,12 +20,12 @@ import {
   type TurnPushContext
 } from "../a2a/push.js";
 import { buildAgentSession, type SessionLike } from "../agent/session.js";
-import {
-  createModelRuntime,
-  type GatewayMetadata,
-  type ModelPair,
-  type ModelRuntime
+import type {
+  GatewayMetadata,
+  ModelPair,
+  ModelRuntime
 } from "../agent/model.js";
+import { workersAIModels } from "../agent/workers-ai/index.js";
 import type { PluginHost } from "./plugin-host.js";
 
 /**
@@ -84,6 +85,9 @@ export abstract class LoopingAgent<
    * `onStart` runs before any request, so it is not known when `agentPlugins()`
    * is built — which is why anything per-caller takes a thunk. The DO is keyed
    * 1:1 by this value, so it is constant once set.
+   *
+   * In-memory, and deliberately so — see {@link requireIdentityKey}, which does
+   * not depend on it surviving.
    */
   private identityKey?: string;
 
@@ -146,12 +150,35 @@ export abstract class LoopingAgent<
     }));
   }
 
-  /** The model runtime for this instance, built lazily over the `AI` binding. */
+  /**
+   * Which provider this agent's loops run on. Defaults to Workers AI; override
+   * to run on something else.
+   *
+   * The seam is here rather than in `models` because `models` memoizes, and a
+   * subclass overriding a memoized getter has to remember to keep the caching —
+   * a trap that only shows up as a performance bug. This is called once.
+   *
+   * `ModelRuntime` is the whole contract: return anything satisfying it and
+   * every loop in core keeps working unchanged. Core ships two implementations,
+   * one directory each — {@link file://../agent/workers-ai/index.ts
+   * `agent/workers-ai`} (the default below) and `@loopingai/core/anthropic` —
+   * and a third provider is a third directory exporting one
+   * {@link file://../agent/model.ts ModelRuntimeFactory}, not a change to
+   * anything on this path.
+   *
+   * Takes the resolved {@link ModelConfig} rather than reading `this.config`, so
+   * that this signature matches
+   * {@link file://../round/subagent.ts RecipeSubagentHost.modelRuntime} — an
+   * agent and its facet **must** run the same provider, and identical seams are
+   * what let one factory serve both instead of two hand-copied bodies.
+   */
+  protected modelRuntime(model: ModelConfig): ModelRuntime {
+    return workersAIModels(this.env, model);
+  }
+
+  /** The model runtime for this instance, built lazily and memoized. */
   protected get models(): ModelRuntime {
-    return (this._models ??= createModelRuntime({
-      ai: this.env.AI,
-      config: this.config.model
-    }));
+    return (this._models ??= this.modelRuntime(this.config.model));
   }
 
   /**
@@ -251,12 +278,41 @@ export abstract class LoopingAgent<
     ));
   }
 
-  /** The caller key, which is present on every path that can reach a plugin. */
+  /**
+   * The caller key, which is present on every path that can reach a plugin.
+   *
+   * ## Why this does not just read the field
+   *
+   * `identityKey` is set on the first turn and lives in the isolate. An isolate
+   * does not live as long as the work does: it can be evicted between two rounds
+   * of the same task, and it can be reset outright — "Durable Object connection
+   * closed because the object was reset" — while a Workflow step is mid-flight.
+   * The next call arrives on a fresh instance where the field is empty, and
+   * every per-caller thunk built off it throws.
+   *
+   * That failure is disproportionate to its cause. A plugin asking which caller
+   * it is serving gets an exception, mid-task, on an object whose entire purpose
+   * is to be that caller's — and because the throw happens inside a tool or a
+   * runtime resolution rather than at the edge, it surfaces as a failed branch
+   * rather than as anything an operator can read.
+   *
+   * So the object answers from itself. `define-agent` routes with
+   * `ns.get(ns.idFromName(identity.key))`, which means the caller key *is* this
+   * object's name and the platform hands it back on `ctx.id.name` — durable, free
+   * and correct by construction: an object cannot disagree with the name it was
+   * addressed by.
+   *
+   * The field still wins when it is set. `id.name` is undefined for an object
+   * addressed by `newUniqueId()` or a raw id string, so it is a fallback rather
+   * than the source of truth, and the throw is kept for the case where neither
+   * exists.
+   */
   protected requireIdentityKey(): string {
-    if (!this.identityKey) {
+    const key = this.identityKey ?? this.ctx.id.name;
+    if (!key) {
       throw new Error("identity.key is required for per-caller isolation");
     }
-    return this.identityKey;
+    return (this.identityKey = key);
   }
 
   /** The gateway callback channel for one turn. See {@link PushChannel}. */

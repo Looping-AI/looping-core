@@ -8,7 +8,11 @@ import type {
 import { generateText, isStepCount } from "ai";
 import { CHUNK_SOFT_MS } from "../platform.js";
 import { stepAllowance } from "../agent/budget.js";
-import { isTransientAiError } from "../agent/inference.js";
+import {
+  isTransientAiError,
+  nonRecoverableKind,
+  type NonRecoverableKind
+} from "../agent/inference.js";
 import { validateRecipe, type RecipePolicy } from "../contract/validation.js";
 import type { ModelPair } from "../agent/model.js";
 import type {
@@ -67,7 +71,7 @@ export interface ChunkRunDeps {
   /**
    * How many of the most recent assistant turns keep their tool results in full;
    * older ones are stubbed by {@link elideToolOutputs}. A mechanic of the window
-   * rather than a property of a domain — see `TOOL_OUTPUT_WINDOW` in `config.ts`.
+   * rather than a property of a domain — see `CoreConfig.toolOutputWindow`.
    */
   toolOutputWindow: number;
   reportMetrics: boolean;
@@ -77,6 +81,11 @@ export interface ChunkRunDeps {
    * hardcoded one.
    */
   maxOutputTokens: number;
+  /**
+   * `CoreConfig.model.maxRetries` — retries on *this* model, honouring the
+   * provider's `retry-after`, before the slot hands over to the fallback.
+   */
+  maxRetries: number;
   now: () => number;
   /** Shared sink the tool families push progress events into (fresh per chunk). */
   progress: ProgressEvent[];
@@ -323,6 +332,42 @@ function completed(
 }
 
 /**
+ * Fail a chunk on an error no second attempt can clear.
+ *
+ * Terminal for this subtask, and deliberately *not* a throw: a throw is retried
+ * by the Workflow step, which is exactly the spend this classification exists to
+ * avoid. The parent round then hits the same condition on its own inference and
+ * fails carrying the kind, which is where an operator-facing message gets
+ * attached — a subagent has no channel of its own to say "a human must fix
+ * this", only this row's `error` string.
+ */
+function nonRecoverableOutcome(
+  state: ChunkRunState,
+  deps: ChunkRunDeps,
+  modelId: string,
+  kind: NonRecoverableKind,
+  diagnostic: string
+): ChunkRunOutput {
+  console.error("[recipe-runner] non-recoverable model failure", {
+    model: modelId,
+    kind,
+    diagnostic
+  });
+  return {
+    outcome: {
+      done: true,
+      result: {
+        status: "failed",
+        error: `${kind}: ${diagnostic}`,
+        modelId
+      },
+      progress: deps.progress
+    },
+    state
+  };
+}
+
+/**
  * Run one durable chunk. Returns a terminal result (natural completion, budget
  * exhaustion, or exhausted models) or a `done: false` yield with the progress
  * emitted this chunk. Throws only on a transient platform fault, so the Workflow
@@ -399,8 +444,11 @@ export async function runResumableChunk(
     // The run-wide deadline. Without it the entry guard would only observe the
     // deadline at the next chunk boundary, up to `chunkSoftMs` past it.
     () => deps.now() - state.startedAtMs >= deps.limits.maxWallMs,
-    // Not a budget: the platform's step timeout, which needs this chunk to
-    // checkpoint and hand back a fresh step long before ~10 minutes.
+    // Not a budget: the configured step timeout, which needs this chunk to
+    // checkpoint and hand back a fresh step before it trips. Soft, and only
+    // checked here between turns — the turn already in flight when it trips still
+    // runs to completion, which is why `STEP_TIMEOUT_MS - CHUNK_SOFT_MS` is sized
+    // to cover a whole turn rather than a nominal moment. See `platform.ts`.
     () => deps.now() - chunkStartMs >= deps.chunkSoftMs,
     // Not a budget either: publish progress to the user promptly.
     () => deps.progress.length > 0
@@ -420,8 +468,9 @@ export async function runResumableChunk(
         tools: deps.tools,
         stopWhen: boundaries(),
         maxOutputTokens: deps.maxOutputTokens,
-        // Primary → fallback recovery is manual; SDK backoff would only add latency.
-        maxRetries: 0,
+        // Not a duplicate of the fallback: the fallback answers "this model
+        // cannot do it", and a 429 says "not yet". See `ModelConfig.maxRetries`.
+        maxRetries: deps.maxRetries,
         abortSignal: deps.abortSignal,
         onStepEnd
       });
@@ -435,9 +484,9 @@ export async function runResumableChunk(
     if (deps.abortSignal?.aborted) return { kind: "aborted" };
     if (result.finishReason === "length") {
       // Its own warning, not just a diagnostic string: hitting the output ceiling
-      // is a tuning signal about MAX_OUTPUT_TOKENS, distinct from the model
-      // producing bad output, and the two are indistinguishable once folded into
-      // the "recipe exhausted" message.
+      // is a tuning signal about `config.model.maxOutputTokens`, distinct from the
+      // model producing bad output, and the two are indistinguishable once folded
+      // into the "recipe exhausted" message.
       console.warn("[recipe-runner] model output truncated", {
         model: modelId,
         maxOutputTokens: deps.maxOutputTokens
@@ -462,6 +511,21 @@ export async function runResumableChunk(
   let a = await attempt(deps.models.primary, deps.models.primaryId());
   if (a.kind === "aborted") return yielded();
   if (a.kind === "failed") {
+    // Checked before the fallback, not after: the second slot would present the
+    // same rejected credential. Returned rather than thrown — a throw here is
+    // retried by the Workflow step, which is the other cost this avoids. The
+    // chunk fails, and the parent's next round classifies it properly.
+    const blocked = nonRecoverableKind(a.error);
+    if (blocked) {
+      return nonRecoverableOutcome(
+        state,
+        deps,
+        a.modelId,
+        blocked,
+        a.diagnostic
+      );
+    }
+
     console.warn("[recipe-runner] primary attempt failed, trying fallback", {
       model: a.modelId,
       diagnostic: a.diagnostic
@@ -543,7 +607,9 @@ async function summarizeBudget(
         messages,
         stopWhen: isStepCount(1),
         maxOutputTokens: deps.maxOutputTokens,
-        maxRetries: 0,
+        // Retries on this model, honouring `retry-after`, before the fallback.
+        // See `ModelConfig.maxRetries`.
+        maxRetries: deps.maxRetries,
         abortSignal: deps.abortSignal
       });
     } catch (error) {
@@ -567,6 +633,19 @@ async function summarizeBudget(
   let a = await summarize(deps.models.primary, deps.models.primaryId());
   if (a.kind === "aborted") return yielded();
   if (a.kind === "failed") {
+    // Same rule as the work loop: no fallback on a credential the API already
+    // rejected. A summary is the cheapest call in the run, but it is not free.
+    const blocked = nonRecoverableKind(a.error);
+    if (blocked) {
+      return nonRecoverableOutcome(
+        state,
+        deps,
+        a.modelId,
+        blocked,
+        a.diagnostic
+      );
+    }
+
     const primaryFailure = a;
     a = await summarize(deps.models.fallback, deps.models.fallbackId());
     if (a.kind === "aborted") return yielded();
@@ -604,6 +683,8 @@ export interface RecipeRunDeps {
   toolOutputWindow: number;
   /** `CoreConfig.model.maxOutputTokens`. */
   maxOutputTokens: number;
+  /** `CoreConfig.model.maxRetries`. */
+  maxRetries: number;
 }
 
 /**
@@ -645,6 +726,7 @@ export async function runRecipeExecution(
       toolOutputWindow: deps.toolOutputWindow,
       reportMetrics: recipe.reportMetrics,
       maxOutputTokens: deps.maxOutputTokens,
+      maxRetries: deps.maxRetries,
       now,
       progress: [],
       checkpoint: () => {}

@@ -188,8 +188,8 @@ probed for), and hand-rolling it is how two agents in one repo drift apart.
 
 ### 4. Delegate, if your agent delegates
 
-`@loopingai/core/round` adds the other half: a durable Subtask DAG, wave
-scheduling, isolated subagent execution, and the round loop over them.
+`@loopingai/core/round` adds the other half: durable Subtasks, concurrent
+execution, isolated subagents, and the round loop over them.
 
 ```ts
 import { RoundAgentBase, type RoundPolicy } from "@loopingai/core/round";
@@ -225,10 +225,11 @@ not drag in the A2A adapter, and the test harness cannot reach a production bund
 | `@loopingai/core`              | `createAgentRuntime`, the plugin contract, config shapes, platform facts    |
 | `@loopingai/core/a2a`          | card signing, JWKS, gateway-JWT verify, push notify, task store, executor   |
 | `@loopingai/core/worker`       | `createA2AWorker()` — the whole zero-trust edge                             |
-| `@loopingai/core/agent`        | session, history, model runtime, inference, budget, control tools           |
+| `@loopingai/core/agent`        | session, history, models + Workers AI, inference, budget, control tools     |
 | `@loopingai/core/host`         | `LoopingAgent` — the Durable Object body — and `PluginHost`                 |
 | `@loopingai/core/round`        | the delegating round loop: `RoundAgentBase`, `runHandleTask`, `runTurn`     |
-| `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool, wave scheduler        |
+| `@loopingai/core/anthropic`    | Claude as a second provider — _optional peer on `@anthropic-ai/sdk`_        |
+| `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool                        |
 | `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
 | `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
 | `@loopingai/core/testing`      | VCR, `FakeSession`, `mockModel`, DO helpers, JWK fixtures — _workerd realm_ |
@@ -465,6 +466,7 @@ await withDb("accepts a turn once", async (db) => {
 - **Bindings:** `AI`, one Durable Object, one Workflow
 - **Secrets:** `A2A_SIGNING_KEY`, `GATEWAY_ORIGINS`
 - **Peers, never bundled:** `agents`, `ai`, `workers-ai-provider`
+- **Optional peer:** `@anthropic-ai/sdk`, needed only by `@loopingai/core/anthropic`
 
 That last point is not stylistic: two copies of `agents` in one Worker breaks the
 `Session` / `SessionMessage` types and every `instanceof`. For local development

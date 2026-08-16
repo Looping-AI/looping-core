@@ -10,22 +10,9 @@ import { TEST_MODELS } from "../testing/fixtures.js";
  * *what work is* — soul, tools, budget, context window — and has no field to
  * name a model with.
  *
- * ## The capability this replaced, and why it was worth deleting
- *
- * A recipe used to state an optional model "preference" that `validateRecipe`
- * substituted away for any id outside an allowlist. It was empty and harmful at
- * the same time:
- *
- * - **Empty**, because the allowlist was built in exactly one place from
- *   exactly the host's two configured models. A preference could never reach a
- *   third model — the cheaper, smaller one it was documented as being for. The
- *   only thing it could express was "run me on the host's *fallback*".
- * - **Harmful**, because the slots resolved independently: preferring the
- *   host's fallback as primary, and stating no fallback, put the same id in
- *   both. The fallback then retried the model that had just failed, silently
- *   defeating the distinct-pair invariant `resolveConfig` enforces.
- *
- * Both are now unrepresentable rather than guarded, which is why the tests
+ * A recipe stating its own model was tried once and removed — see
+ * `validation.ts` for what it cost. What matters here is that both failure
+ * modes are now **unrepresentable rather than guarded**, which is why the tests
  * below are mostly about shapes rather than substitutions.
  */
 

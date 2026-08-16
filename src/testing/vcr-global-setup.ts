@@ -8,9 +8,7 @@ import { closeVcr } from "./vcr.js";
  * Belt and braces rather than load-bearing — each cassette is already flushed
  * when its test releases it, so a run that ends normally has nothing left to do
  * here, and a run that dies mid-test keeps everything recorded up to that point.
- * (Under the old undici recorder this step was mandatory: it held real sockets
- * and a self-refreshing auto-flush timer open, and a `RECORD=1` run hung on
- * "close timed out" without it. Neither exists now.)
+ * The recorder holds no sockets and no timers, so nothing here has to close.
  */
 export function setup(): void {}
 

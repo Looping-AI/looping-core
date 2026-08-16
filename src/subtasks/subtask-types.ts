@@ -93,14 +93,13 @@ export interface SubtaskTypeRegistry {
   paramProperties(): Record<string, z.ZodType<string | undefined>>;
   /** The type catalogue as the delegating model is shown it. */
   renderTypes(): string;
-  /**
-   * Every type's {@link SubtaskTypeSpec.capability}, for the main agent's soul.
-   *
-   * Returns `""` when no type declares one, and that case is worth naming: it is
-   * what lets each call site append unconditionally instead of emitting a
-   * separator around nothing.
-   */
-  renderCapabilities(): string;
+  // No `renderCapabilities` here, deliberately. A type's
+  // {@link SubtaskTypeSpec.capability} is rendered by
+  // {@link file://../runtime/index.ts AgentRuntime.renderCapabilities}, together
+  // with the plugin-level blocks and in plugin declaration order. A second
+  // renderer over the same strings is not a convenience — it is a host that can
+  // call both and make the main agent read every block twice, which is the exact
+  // failure the type's own prompt fields were introduced to end.
   /** Every type's {@link SubtaskTypeSpec.delegationGuidance}, for the round contract. */
   renderDelegationGuidance(names: DelegationNames): string;
 }
@@ -213,12 +212,6 @@ export function makeSubtaskTypes(
           return `- \`${s.key}\`: ${s.description}${help}`;
         })
         .join("\n");
-    },
-
-    renderCapabilities(): string {
-      const blocks: string[] = [];
-      for (const s of specs) if (s.capability) blocks.push(s.capability);
-      return blocks.join("\n\n");
     },
 
     renderDelegationGuidance(names: DelegationNames): string {

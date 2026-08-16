@@ -62,24 +62,25 @@ export function makeDelegateTool(
 /**
  * The call's id, derived from the parent Task and the round that emitted it —
  * deterministic and replay-safe, the same discipline as the Session message ids
- * it sits alongside (see {@link file://../history.ts}). Later rounds rebuild it
+ * it sits alongside (see {@link file://../agent/history.ts}). Later rounds rebuild it
  * rather than storing it.
+ *
+ * **Underscores, not colons, and this is load-bearing.** Unlike a Session message
+ * id, this one is sent to a provider as a `tool_use.id`, and Anthropic validates
+ * that field against `^[a-zA-Z0-9_-]+$`. The colon-separated form this used to
+ * return failed every round from the first delegation onwards — round 0 was fine
+ * because the model authors its own ids, and round 1 reconstructs this one, so
+ * the request 400d deterministically on both the primary and the fallback until
+ * the deterministic join fired. Workers AI never validated the field, which is
+ * why it took a Claude-backed agent to surface it.
+ *
+ * Nothing persists this: both halves of the pair are rebuilt together on every
+ * request, so changing the shape needs no migration. See
+ * {@link file://../agent/anthropic/prompt.ts providerSafeToolCallId} for the
+ * backstop that catches the next one of these.
  */
 export function delegateToolCallId(taskId: string, round: number): string {
-  return `task:${taskId}:round:${round}:delegate`;
-}
-
-/**
- * The draft-local key a reconstructed call uses for a durable Subtask.
- *
- * A row does not keep the `localKey` its round's model chose — the data layer
- * resolved it to a SQLite id and dropped it. So reconstruction derives a stable
- * key from that id instead: the *same* id the matching outcome carries in
- * {@link DelegateSubtaskOutcome}, so the model can line each result up with the
- * work that produced it.
- */
-function localKeyForId(id: SubtaskId): string {
-  return `s${id}`;
+  return `task_${taskId}_round_${round}_delegate`;
 }
 
 /**
@@ -109,6 +110,11 @@ export type DelegateSubtaskOutcome = {
  * `referenceIndexes` is omitted rather than faked: this round's references were
  * snapshotted verbatim onto the rows when it ran, and the catalog they were
  * chosen from is long gone.
+ *
+ * A subtask proposal carries no identifier of its own, so the model pairs each
+ * entry here with its outcome **by position**: both arrays are built from the
+ * same ordinal-ordered `branches`, and the outcome additionally repeats `type`
+ * and carries the durable `subtaskId`.
  */
 export function delegateCallInput(
   reply: string,
@@ -117,10 +123,8 @@ export function delegateCallInput(
   return {
     reply,
     subtasks: branches.map((branch) => ({
-      localKey: localKeyForId(branch.subtaskId),
       type: branch.type,
       prompt: branch.prompt,
-      dependsOn: branch.dependsOn.map(localKeyForId),
       // Reconstructed verbatim from the row: a later round must see the same
       // params the call really carried, or it cannot reason about what ran.
       params: branch.params

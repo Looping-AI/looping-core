@@ -48,8 +48,8 @@ Generate a keypair with `npm run keys`.
 
 ## Publishing constraints
 
-The package has no root barrel; every area is its own subpath export. Three rules
-follow from that, and all three have already been violated once:
+The package has no root barrel; every area is its own subpath export. Four rules
+follow from that, and all four have already been violated once:
 
 - **Always write `.js` on relative imports.** `moduleResolution: "Bundler"`
   typechecks extensionless specifiers, but `tsc` emits them verbatim and Node ESM
@@ -68,6 +68,16 @@ follow from that, and all three have already been violated once:
   `src/env.ts` and takes bindings as parameters. The one exception is the
   namespaced `Cloudflare.Env`, which is a declaration-merging seam the Agents SDK
   itself constrains its base class to — see the note in `tsconfig.json`.
+
+- **Never import a package this one does not declare.** npm hoists a transitive
+  dependency into a flat `node_modules`, so an undeclared import resolves here
+  and nowhere stricter — pnpm and Yarn PnP both refuse it, and so does npm the
+  moment the intermediate package restructures. `@ai-sdk/provider` reached
+  `/testing` this way (through `ai`'s copy) and `@typescript-eslint/utils`
+  reached `/eslint` (through `typescript-eslint`). Prefer the re-export from a
+  package already declared — `ai` re-exports `APICallError` — and where the
+  import is genuinely needed, declare it as an **optional peer**, like
+  `@anthropic-ai/sdk`. `verify:exports` now fails on this.
 
 Adding an export subpath means adding it to `package.json`'s `exports` **and**
 confirming it emits: a subpath that resolves to a missing file is invisible until
@@ -102,13 +112,38 @@ cannot strand in-flight runs.
 
 ---
 
+## The platform bounds
+
+`src/platform.ts` holds time and step limits, and the one thing to know before
+touching it is that **`STEP_TIMEOUT_MS` is not a platform fact.** Ten minutes is
+Workflows' _default_ step timeout, not its ceiling; core passes its own on every
+step that can hold a model call or a container command (`LONG_STEP` in
+`round/workflow.ts`). Wall-clock per step is effectively unlimited — a step is
+bounded by CPU, and the chunk steps use milliseconds of it — so the value is a
+ceiling we choose, to turn a hung container into a retry rather than a task that
+never ends.
+
+`CHUNK_SOFT_MS` is sized against it, and the sizing is the part that bit us. The
+soft deadline is checked **between turns**, so a turn already in flight when it
+trips still runs to completion, and a turn is a model call plus a tool call. The
+headroom therefore has to cover a whole turn — `MAX_TOOL_CALL_MS` plus room for
+the model — not a nominal minute. `platform.spec.ts` asserts that relationship;
+raise the step timeout before raising the chunk deadline.
+
+`MAX_TOOL_CALL_MS` is a **contract, not a mechanism** — core installs no tools,
+so it cannot enforce it. A host that installs something which can block (a shell,
+a container command, a fetch with no ceiling) must bound it at or below that
+value, or it reintroduces the step-timeout kill invisibly, from inside a plugin.
+
+---
+
 ## The line core does not cross
 
 The old rule was "core ships no loop." That was the right instinct at the wrong
 granularity, and 0.4.0 sharpens it: **core ships no prompt copy and no policy.**
 
-`@loopingai/core/round` now ships the whole delegating loop — the DAG wave
-scheduler, chunked subagent execution, cancellation ordering, the
+`@loopingai/core/round` now ships the whole delegating loop — concurrent subtask
+execution, chunked subagent runs, cancellation ordering, the
 primary→fallback→repair ladder. Keeping that out of core did not make agents more
 expressive; it made every consumer fork ~2,700 lines of durable-execution logic
 they could not receive fixes for. The starter's own two agents, written against a
@@ -133,11 +168,43 @@ cannot. A sentence the model reads always can.
 Two consequences for exports:
 
 - `/round` must **never** be re-exported from the root barrel, or a non-delegating
-  agent pays for a scheduler it never calls. `verify:isolation` in the starter
+  agent pays for a delegating loop it never runs. `verify:isolation` in the starter
   asserts the proactive agent's graph is free of `core/dist/round/`.
 - `/host` is separate from `/agent` for the same reason: `/agent` is loop
   primitives, and a loop module should not drag a Durable Object base class and
   drizzle into its graph.
+
+### Model providers
+
+A provider is a **sibling directory under `src/agent/`** exporting one
+`ModelRuntimeFactory`. `src/agent/model.ts` is the contract and holds no
+implementation — the Workers AI factory used to live in it, and a contract that
+ships one implementation inline reads as _the_ runtime with an escape hatch
+rather than as one of N. `src/agent/errors.ts` is its neutral companion: a
+rejected credential is a fact about the path to a model, not about any vendor.
+
+Three rules follow, and they are what keep a third provider cheap:
+
+- **Nothing neutral may import a provider directory.** `inference.ts` classifies
+  a dead credential by `CredentialRejectedError`, which is structurally matched,
+  so a provider written _outside_ core raises one and gets the same
+  fallback-skipping treatment with nothing in core to change.
+- **A subpath only when the peer is optional.** `workers-ai` has none because
+  `workers-ai-provider` is a required peer and every consumer's graph holds it
+  already; `/anthropic` has one because `@anthropic-ai/sdk` is optional and an
+  agent on Workers AI must not pay for a provider it never calls. **No runtime
+  subpath may import `/anthropic`.**
+- **`LoopingAgent.modelRuntime` and `RecipeSubagentHost.modelRuntime` are
+  overridden together.** They take identical arguments so one factory can serve
+  both. A facet left on the default while its parent runs on Claude executes
+  every delegated subtask on a different model than the round that delegated it,
+  and does so silently, because both satisfy `ModelRuntime`.
+
+Everything deployment-specific stays out, as everywhere else here: which gateway
+path (`ModelConfig.aiGatewayProvider`), which credential, and which intermediary
+a `401` came from (`AnthropicModelDeps.classifyAuthFailure`) are all supplied by
+the agent. Core recognised one particular proxy's error body once; that is the
+shape of mistake this section exists to prevent.
 
 ---
 

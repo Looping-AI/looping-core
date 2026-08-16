@@ -26,6 +26,12 @@ const dbMigrations: MigrationConfig = {
         when: 1785537420937,
         tag: "0000_init",
         breakpoints: true
+      },
+      {
+        idx: 1,
+        when: 1786871925215,
+        tag: "0001_drop_depends_on",
+        breakpoints: true
       }
     ]
   },
@@ -67,7 +73,8 @@ CREATE TABLE \`subtasks\` (
 CREATE UNIQUE INDEX \`idx_subtasks_task_ordinal\` ON \`subtasks\` (\`task_id\`,\`ordinal\`);--> statement-breakpoint
 CREATE INDEX \`idx_subtasks_task_round\` ON \`subtasks\` (\`task_id\`,\`round\`);--> statement-breakpoint
 CREATE INDEX \`idx_subtasks_status\` ON \`subtasks\` (\`status\`);--> statement-breakpoint
-CREATE INDEX \`idx_subtasks_created_at\` ON \`subtasks\` (\`created_at\`);`
+CREATE INDEX \`idx_subtasks_created_at\` ON \`subtasks\` (\`created_at\`);`,
+    m0001: `ALTER TABLE \`subtasks\` DROP COLUMN \`depends_on_json\`;`
   }
 };
 

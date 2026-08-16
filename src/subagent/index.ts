@@ -46,6 +46,8 @@ export interface SubagentRuntime {
   toolOutputWindow: number;
   /** `CoreConfig.model.maxOutputTokens`. */
   maxOutputTokens: number;
+  /** `CoreConfig.model.maxRetries`. */
+  maxRetries: number;
   /**
    * Build the durable file store over this facet's own SQLite.
    *
@@ -70,7 +72,7 @@ export interface SubagentRuntime {
 export const FINGERPRINT_MISMATCH =
   "recipe-subagent: request fingerprint mismatch";
 
-/** Deterministic managed-child name for one Subtask execution (shared with C3). */
+/** Deterministic managed-child name for one Subtask execution. */
 export function subagentName(taskId: string, subtaskId: SubtaskId): string {
   return `subtask:${taskId}:${subtaskId}`;
 }
@@ -94,9 +96,9 @@ const cachedResultSchema = z.discriminatedUnion("status", [
 /**
  * `RecipeSubagent` — the isolated, stateless managed child that executes one
  * Subtask under a resolved Recipe. Created as an Agents SDK sub-agent (facet)
- * beneath the caller's `ReactiveAgent`, so it needs no wrangler Durable Object
- * binding and no `new_sqlite_classes` entry; it must only be exported from the
- * worker entry (`src/index.ts`) so `ctx.exports` can resolve it by class name.
+ * beneath the calling agent, so it needs no wrangler Durable Object binding and
+ * no `new_sqlite_classes` entry; it must only be exported from the consuming
+ * Worker's entry so `ctx.exports` can resolve it by class name.
  *
  * It never constructs a Session, never reads parent history beyond the
  * references supplied on its request, never reaches durable memory, and never
@@ -242,8 +244,9 @@ export abstract class RecipeSubagentBase<
       });
     }
     // Re-check the type's param contract, the same defensive posture as
-    // `validateRecipe`: a play with no scorecard cannot succeed, and failing
-    // here costs no model call and gives the parent a real diagnostic.
+    // `validateRecipe`: a subtask missing a param its type requires cannot
+    // succeed, and failing here costs no model call and gives the parent a real
+    // diagnostic.
     try {
       rt.types.validateParams(request.type, request.params);
     } catch (error) {
@@ -299,6 +302,7 @@ export abstract class RecipeSubagentBase<
         toolOutputWindow: rt.toolOutputWindow,
         reportMetrics: recipe.reportMetrics,
         maxOutputTokens: rt.maxOutputTokens,
+        maxRetries: rt.maxRetries,
         now: () => Date.now(),
         progress,
         checkpoint: (s) => this.saveRunState(fingerprint, s),

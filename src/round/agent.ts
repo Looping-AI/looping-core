@@ -17,17 +17,14 @@ import type { GatewayMetadata } from "../agent/model.js";
 import { FINGERPRINT_MISMATCH, subagentName } from "../subagent/index.js";
 import type {
   CompositionBranch,
-  DependencyResult,
   RecipeChunkResult,
   RecipeExecutionRequest,
   RecipeExecutionResult,
   Subtask,
   SubtaskChunkOutcome,
   SubtaskId,
-  SubtaskNode,
   SubtaskRuntime,
   SubtaskScan,
-  SubtaskStatus,
   TurnTaskResult,
   TurnVerdict
 } from "../subtasks/types.js";
@@ -42,14 +39,13 @@ import {
 } from "./turn.js";
 
 /**
- * A **delegating** agent: the round loop, the durable Subtask DAG, and the
- * isolated subagent execution beneath it.
+ * A **delegating** agent: the round loop, the durable Subtasks it hands out, and
+ * the isolated subagent execution beneath them.
  *
  * Everything {@link LoopingAgent} gives every agent, plus the half that only a
  * delegating one needs — and it is all mechanism. A Workflow drives it through
- * native Cloudflare RPC (`runTaskTurn`, `skipBlockedSubtasks`,
- * `executeSubtaskChunk`, …), never HTTP: the DO is a private implementation
- * detail of the Worker.
+ * native Cloudflare RPC (`runTaskTurn`, `scanSubtasks`, `executeSubtaskChunk`,
+ * …), never HTTP: the DO is a private implementation detail of the Worker.
  *
  * ## Why core owns this
  *
@@ -142,8 +138,8 @@ export abstract class RoundAgentBase<
   // parent row or the child's cached result.
 
   /**
-   * One main-agent round: answer the user, or delegate a durable Subtask DAG and
-   * return the acknowledgment the user sees while it runs.
+   * One main-agent round: answer the user, or delegate a durable set of Subtasks
+   * and return the acknowledgment the user sees while it runs.
    *
    * This is the RPC boundary, so it is where the round's cost becomes a field. The
    * budget is created here, handed to {@link decideRound} to be spent, and read
@@ -244,12 +240,15 @@ export abstract class RoundAgentBase<
       types: this.runtime.types,
       maxSubtasks: this.config.maxSubtasks,
       maxOutputTokens: this.config.model.maxOutputTokens,
+      maxRetries: this.config.model.maxRetries,
       instructions: this.instructions,
       partialNote: policy.copy.partialNote,
       // The key carries the round so two rounds of one Task cannot collide on
       // the gateway, which a bare step index would.
       onContent: channel?.stream((step) => `r${round}:step:${step}`)
     });
+    // Terminal for this round with nothing to persist — the kind rides out with
+    // it, and the Workflow turns it into words.
     if (outcome.status === "failed") return outcome;
 
     // Cancelled while the model worked: persist nothing and publish nothing. The
@@ -278,7 +277,7 @@ export abstract class RoundAgentBase<
    * Every round's branches for a Task, in stable ordinal order — what a round
    * needs to reunite each earlier `delegate` call with its result. Built inside
    * the DO and consumed here, so the 1 MiB Workflow-step cap that keeps
-   * {@link SubtaskNode} narrow does not apply.
+   * {@link SubtaskScan} down to ids does not apply.
    */
   private compositionBranches(taskId: string): CompositionBranch[] {
     return this.db.subtasks.list(taskId).map((s) => ({
@@ -287,7 +286,6 @@ export abstract class RoundAgentBase<
       ordinal: s.ordinal,
       type: s.type,
       prompt: s.prompt,
-      dependsOn: s.dependsOn,
       params: s.params,
       status: s.status,
       resultParts: s.resultParts,
@@ -301,44 +299,33 @@ export abstract class RoundAgentBase<
   }
 
   /**
-   * The Workflow's per-wave scan for **one round's** DAG: report a cancellation,
-   * or skip every pending Subtask blocked by a dependency that did not succeed and
-   * return the refreshed DAG as scheduler {@link SubtaskNode}s.
+   * The Workflow's scan for **one round's** Subtasks: report a cancellation, or
+   * return the ids that still owe an outcome, in ordinal order.
    *
-   * Scoped to the round because dependency edges never cross one: an earlier
-   * round's rows are already terminal and irrelevant to this wave, and including
-   * them would only widen a projection that has a size cap.
+   * Scoped to the round because the Workflow drives one round at a time: an
+   * earlier round's rows are already terminal and would only widen a projection
+   * that has a size cap.
    *
-   * Skipping runs to a fixpoint because it propagates: a node skipped for a
-   * failed prerequisite blocks *its* dependents in turn. Bounded by the
-   * per-round maximum. Independent branches are untouched — one branch's failure
-   * never stops work that does not depend on it.
+   * `running` counts alongside `pending` on purpose. `executeSubtaskChunk`
+   * accepts a row that is either: the latter is its ambiguous-retry path, where a
+   * previous attempt crashed mid-execution and the managed child's fingerprint
+   * cache may still hold the terminal result that makes the retry free. So a row
+   * stranded `running` is re-runnable, and omitting it here would abandon it.
+   *
+   * Ordinal order comes from {@link listRound} and is not incidental: these ids
+   * become durable Workflow step names, so the traversal that produces them has
+   * to be deterministic.
    *
    * The cancellation verdict rides along rather than being probed separately, so
-   * a wave costs one round trip and cannot act on a stale answer.
+   * the scan costs one round trip and cannot act on a stale answer.
    */
-  async skipBlockedSubtasks(
-    taskId: string,
-    round: number
-  ): Promise<SubtaskScan> {
+  async scanSubtasks(taskId: string, round: number): Promise<SubtaskScan> {
     if (await this.isTaskCanceled(taskId)) return { canceled: true };
-    const blocked = new Set<SubtaskStatus>(["failed", "skipped", "canceled"]);
-    for (;;) {
-      const current = this.db.subtasks.listRound(taskId, round);
-      const byId = new Map(current.map((s) => [s.id, s]));
-      const next = current.filter(
-        (s) =>
-          s.status === "pending" &&
-          s.dependsOn.some((dep) => {
-            const parent = byId.get(dep);
-            return parent !== undefined && blocked.has(parent.status);
-          })
-      );
-      if (next.length === 0) {
-        return { canceled: false, nodes: current.map(toSubtaskNode) };
-      }
-      for (const s of next) this.db.subtasks.skip(s.id);
-    }
+    const ids = this.db.subtasks
+      .listRound(taskId, round)
+      .filter((s) => s.status === "pending" || s.status === "running")
+      .map((s) => s.id);
+    return { canceled: false, ids };
   }
 
   /** Parent cancellation: cancel every still-pending Subtask. Returns the count. */
@@ -361,17 +348,17 @@ export abstract class RoundAgentBase<
   async failSubtask(id: SubtaskId, error: string): Promise<void> {
     const subtask = this.db.subtasks.get(id);
     if (!subtask) return;
-    // `fail` is a guarded `running|pending -> failed`, and its verdict is the
-    // whole idempotency claim above. Dropping it made this method a no-op in
-    // *name* only: a late workflow failure that lost the race to a real result
-    // would still release the branch's runtime, abort its child and delete it —
-    // tearing down a branch that had already succeeded.
+    // `fail` is a guarded `running|pending -> failed`, and **its verdict is the
+    // whole idempotency claim above** — read it before tearing anything down. A
+    // late workflow failure that lost the race to a real result would otherwise
+    // still release the branch's runtime, abort its child and delete it, tearing
+    // down a branch that had already succeeded.
     //
-    // That is also precisely the teardown `executeSubtaskChunk` defers on the
-    // success path, because aborting a facet in the same tick its RPC returned
-    // makes telemetry record the success as a failure. Cleanup for an
-    // already-terminal row belongs to `sweepTaskChildren`, which runs after
-    // delivery and knows the whole task is done with.
+    // Cleanup for an already-terminal row belongs to `sweepTaskChildren`, which
+    // runs after delivery and knows the whole task is done with — the same
+    // teardown `executeSubtaskChunk` defers on its success path, because
+    // aborting a facet in the same tick its RPC returned makes telemetry record
+    // the success as a failure.
     if (!this.db.subtasks.fail(id, error)) return;
     const name = subagentName(subtask.taskId, id);
     await this.releaseRuntimeQuietly(subtask);
@@ -403,8 +390,9 @@ export abstract class RoundAgentBase<
    *   delete; that now happens strictly later.
    *
    * Throws on a transient fault (the step retries and the child resumes from its
-   * checkpoint) and on scheduler-invariant violations — both are bugs, not
-   * outcomes.
+   * checkpoint) and when the row is in a status this cannot accept — a subtask
+   * that is neither `pending` nor `running` nor already terminal. Both are bugs,
+   * not outcomes.
    */
   async executeSubtaskChunk(
     id: SubtaskId,
@@ -551,8 +539,6 @@ export abstract class RoundAgentBase<
       return { kind: "terminal", subtask };
     }
 
-    const dependencyResults = this.loadDependencyResults(subtask);
-
     let recipe: ResolvedRecipe | undefined;
     let validated;
     try {
@@ -561,7 +547,8 @@ export abstract class RoundAgentBase<
     } catch (err) {
       // An unknown/retired type or a disabled/soul-less Recipe is a
       // configuration bug, not a transient fault. Record it as a branch failure
-      // so the DAG's skip semantics apply to its dependents.
+      // so a later round can disclose the gap, rather than as a throw that would
+      // be retried forever.
       const recipeId = recipe?.key ?? subtask.type;
       const recipeVersion = recipe?.version ?? 0;
       const message = recipe
@@ -597,7 +584,6 @@ export abstract class RoundAgentBase<
       recipe: validated,
       prompt: subtask.prompt,
       references: subtask.references,
-      dependencyResults,
       params: subtask.params
     };
     return {
@@ -724,36 +710,6 @@ export abstract class RoundAgentBase<
     }
   }
 
-  /**
-   * Load a Subtask's dependency results, in ordinal order.
-   *
-   * Order is semantic: it feeds the child's request fingerprint, so a retry must
-   * build the identical array or the cache misses. A dependency that has not
-   * completed means the scheduler ran this node too early.
-   */
-  private loadDependencyResults(subtask: Subtask): DependencyResult[] {
-    if (subtask.dependsOn.length === 0) return [];
-    const deps = this.db.subtasks
-      .list(subtask.taskId)
-      .filter((s) => subtask.dependsOn.includes(s.id));
-    if (deps.length !== subtask.dependsOn.length) {
-      throw new Error(`subtask ${subtask.id} has unknown dependencies`);
-    }
-    return deps.map((dep) => {
-      if (dep.status !== "completed" || !dep.resultParts) {
-        throw new Error(
-          `subtask ${subtask.id} ran before dependency ${dep.id} completed ` +
-            `(status=${dep.status})`
-        );
-      }
-      return {
-        subtaskId: dep.id,
-        type: dep.type,
-        resultParts: dep.resultParts
-      };
-    });
-  }
-
   /** Re-read a Subtask that must exist (it was just written). */
   private requireSubtask(id: SubtaskId): Subtask {
     const row = this.db.subtasks.get(id);
@@ -783,7 +739,7 @@ export abstract class RoundAgentBase<
    * Interrupt a canceled Task's live children: each `running` Subtask's managed
    * child gets `abortRun`, so a long recipe stops at its current model call
    * instead of at the next chunk boundary (up to `chunkSoftMs` later). A subtask
-   * that already finished (e.g. one branch of a wave completed while another was
+   * that already finished (e.g. one branch completed while another was
    * still running) is deliberately retained until the terminal-delivery sweep —
    * but a canceled Task never reaches delivery, so its idle child is deleted
    * here instead, or it would leak until the 30-day row cleanup regardless of
@@ -834,14 +790,4 @@ export abstract class RoundAgentBase<
       }
     }
   }
-}
-
-/** Project a durable row to the scheduler's view. */
-function toSubtaskNode(s: Subtask): SubtaskNode {
-  return {
-    id: s.id,
-    ordinal: s.ordinal,
-    status: s.status,
-    dependsOn: s.dependsOn
-  };
 }

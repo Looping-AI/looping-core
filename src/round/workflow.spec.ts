@@ -108,6 +108,24 @@ function fakeAgent(options: FakeAgentOptions = {}) {
   return { stub, calls };
 }
 
+/**
+ * A `fakeAgent` whose guarded terminal write also records what it persisted —
+ * the only way to read the words a failure actually delivered, since `notify`
+ * posts what `saveTask` accepted.
+ */
+function savingAgent() {
+  const saved: unknown[] = [];
+  const { stub } = fakeAgent();
+  const spy = {
+    ...stub,
+    async saveTask(task: unknown) {
+      saved.push(task);
+      return true;
+    }
+  };
+  return { saved, spy };
+}
+
 function params() {
   return {
     taskId: "task-1",
@@ -314,19 +332,11 @@ describe("a Durable Object replaced under a running workflow", () => {
           ? { status: "delegated", turns: 1 }
           : { status: "replied", reply: "the answer", turns: 1 };
       },
-      async skipBlockedSubtasks() {
-        calls.push("skipBlockedSubtasks");
-        return {
-          canceled: false,
-          nodes: [
-            {
-              id: 8,
-              ordinal: 0,
-              status: done ? "completed" : "pending",
-              dependsOn: []
-            }
-          ]
-        };
+      async scanSubtasks() {
+        calls.push("scanSubtasks");
+        // A completed row owes nothing, so it drops out of the scan — the same
+        // filter the real `scanSubtasks` applies.
+        return { canceled: false, ids: done ? [] : [8] };
       },
       async executeSubtaskChunk() {
         calls.push("executeSubtaskChunk");
@@ -455,10 +465,10 @@ describe("a Durable Object replaced under a running workflow", () => {
       }
     });
 
-    // working, turn:0, scan:0:0, execute:8, scan:0:1, complete, sweep.
+    // working, turn:0, scan:0, execute:8, complete, sweep.
     // `turn:1` and `notify` are served from cache; `started` and the two
     // `deadline:<round>` steps never touch the DO.
-    expect(resolved).toBe(7);
+    expect(resolved).toBe(6);
   });
 });
 
@@ -467,18 +477,15 @@ describe("a failed turn", () => {
     // `taskFailed` is `RoundPolicy` copy — a user-facing string, so it is the
     // agent's. Core shipping a default here would be house prompt copy in a
     // published package.
-    const saved: unknown[] = [];
-    const { stub } = fakeAgent();
-    const spy = {
-      ...stub,
-      async saveTask(task: unknown) {
-        saved.push(task);
-        return true;
-      }
-    };
+    const { saved, spy } = savingAgent();
     const { step } = fakeStep({
       cached: {
-        "turn:0": { status: "failed", error: "model exploded", turns: 1 },
+        "turn:0": {
+          status: "failed",
+          kind: "exhausted",
+          error: "model exploded",
+          turns: 1
+        },
         notify: undefined
       }
     });
@@ -489,5 +496,72 @@ describe("a failed turn", () => {
     expect(JSON.stringify(task)).toContain(policy.copy.taskFailed);
     // The diagnostic is logged, not shown: the user reads the policy string.
     expect(JSON.stringify(task)).not.toContain("model exploded");
+  });
+
+  /**
+   * The kind is the whole reason `failed` carries one: a rejected credential
+   * and an exhausted ladder deliver the same shape, and only the host's words
+   * tell an operator which one happened and what to do about it.
+   */
+  it("delivers the host's copy for the kind that has one", async () => {
+    const { saved, spy } = savingAgent();
+    const { step } = fakeStep({
+      cached: {
+        "turn:0": {
+          status: "failed",
+          kind: "gateway-credential",
+          error: "401 Unauthorized",
+          turns: 1
+        },
+        notify: undefined
+      }
+    });
+
+    const seen: string[] = [];
+    await runHandleTask(params(), step, {
+      ...deps(spy),
+      failureCopy: (kind) => {
+        seen.push(kind);
+        return "ROTATE THE GATEWAY TOKEN";
+      }
+    });
+
+    expect(seen).toEqual(["gateway-credential"]);
+    expect(JSON.stringify(saved[0])).toContain("ROTATE THE GATEWAY TOKEN");
+    expect(JSON.stringify(saved[0])).not.toContain(policy.copy.taskFailed);
+  });
+
+  /**
+   * The hook is now reached for *every* failure kind, which is the point of
+   * merging the two statuses — but a host that has nothing to add for one of
+   * them must still get the policy's copy rather than an empty message.
+   */
+  it("falls back to policy copy when the host declines the kind", async () => {
+    const { saved, spy } = savingAgent();
+    const { step } = fakeStep({
+      cached: {
+        "turn:0": {
+          status: "failed",
+          kind: "exhausted",
+          error: "model exploded",
+          turns: 1
+        },
+        notify: undefined
+      }
+    });
+
+    const seen: string[] = [];
+    await runHandleTask(params(), step, {
+      ...deps(spy),
+      failureCopy: (kind) => {
+        seen.push(kind);
+        return undefined;
+      }
+    });
+
+    // Called, and declined — not skipped. The host decides, core supplies the
+    // floor.
+    expect(seen).toEqual(["exhausted"]);
+    expect(JSON.stringify(saved[0])).toContain(policy.copy.taskFailed);
   });
 });

@@ -33,13 +33,11 @@ const page = (over: Partial<TaskListQuery> = {}): TaskListQuery => ({
   ...over
 });
 
-const draft = (localKey: string, over: Partial<SubtaskDraft> = {}) =>
+const draft = (name: string, over: Partial<SubtaskDraft> = {}) =>
   ({
-    localKey,
     type: "generic",
-    prompt: `do ${localKey}`,
+    prompt: `do ${name}`,
     references: [],
-    dependsOn: [],
     params: {},
     ...over
   }) satisfies SubtaskDraft;
@@ -219,30 +217,18 @@ describe("subtasks", () => {
     expect(again.map((s) => s.id)).toEqual(first.map((s) => s.id));
   });
 
-  it("refuses duplicate local keys within one round", async () => {
-    await withDb("dup-keys", async (db) => {
+  it("continues ordinals across rounds, so a later round sorts after an earlier one", async () => {
+    // Ordinal is the Task-wide position and the unique index is built on it, so
+    // a second round must start above every row the first one wrote.
+    const rows = await withDb("ordinals-across-rounds", async (db) => {
       await db.ensureReady();
-      expect(() =>
-        db.subtasks.createDecomposition("t1", 1, [draft("a"), draft("a")])
-      ).toThrow(/duplicate draft local key: a/);
-    });
-  });
-
-  it("resolves dependency edges that point forward to a later draft", async () => {
-    // Every key is registered before any edge is checked, precisely so an edge
-    // may name a draft defined further down the list.
-    const rows = await withDb("forward-edge", async (db) => {
-      await db.ensureReady();
-      return db.subtasks.createDecomposition("t1", 1, [
-        draft("first", { dependsOn: ["second"] }),
-        draft("second")
-      ]);
+      db.subtasks.createDecomposition("t1", 0, [draft("a"), draft("b")]);
+      db.subtasks.createDecomposition("t1", 1, [draft("c")]);
+      return db.subtasks.list("t1");
     });
 
-    expect(rows).toHaveLength(2);
-    const first = rows.find((r) => r.prompt === "do first");
-    const second = rows.find((r) => r.prompt === "do second");
-    expect(first?.dependsOn).toEqual([second?.id]);
+    expect(rows.map((r) => r.ordinal)).toEqual([0, 1, 2]);
+    expect(rows.map((r) => r.prompt)).toEqual(["do a", "do b", "do c"]);
   });
 
   it("guards each status transition so a late loser cannot overwrite a result", async () => {

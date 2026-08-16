@@ -18,6 +18,8 @@
  *      the stale-artifact case that made the original defect survive a rebuild.
  *   5. Realm isolation: no *runtime* subpath can reach `node:*`, `undici`,
  *      `cloudflare:test` or `vitest` through any depth of relative import.
+ *   6. Every bare specifier a subpath reaches is a declared dependency. Hoisting
+ *      makes an undeclared one work in this repo and nowhere stricter.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -117,6 +119,66 @@ for (const [subpath, target] of subpathEntries) {
   }
 }
 
+// --- 6. every bare specifier is declared -------------------------------------
+
+/**
+ * A package a consumer must install is one this package must declare. Anything
+ * else works here and only here, because npm hoists a transitive dependency into
+ * a flat `node_modules` that a consumer's package manager may not reproduce —
+ * pnpm and Yarn PnP do not, and neither does npm once the intermediate package
+ * restructures.
+ *
+ * The defect that motivated this: `@ai-sdk/provider` was imported for its
+ * `APICallError` from `/testing`, which every consumer loads, while appearing in
+ * no dependency field at all. It resolved through `ai`'s own copy, so nothing in
+ * this repo noticed — the exact shape of failure this file exists to catch.
+ *
+ * `node:*` and `cloudflare:*` are excluded because check 5 already governs who
+ * may reach them, and subpath imports (`ai/test`, `agents/experimental/...`) are
+ * reduced to their package name before the lookup. The package's own name is
+ * allowed: a self-reference resolves through `exports`, which check 1 has
+ * already verified.
+ */
+const declared = new Set([
+  pkg.name,
+  ...Object.keys(pkg.dependencies ?? {}),
+  ...Object.keys(pkg.peerDependencies ?? {})
+]);
+
+/**
+ * A specifier that could actually be a package.
+ *
+ * `relativeImports` scans text, not an AST, so it also matches the word
+ * `import` followed by a quoted string inside a doc comment. Those are prose —
+ * they contain spaces and newlines, which no package name may — and reporting
+ * one as an undeclared dependency would make this check untrustworthy on its
+ * first false alarm. Cheaper and more honest than teaching the scanner to strip
+ * comments, which risks mangling any string containing `//`.
+ */
+const PACKAGE_SPECIFIER =
+  /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*/i;
+
+/** `@scope/name/deep/path` → `@scope/name`; `name/sub` → `name`. */
+const packageName = (specifier) => {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+};
+
+for (const [subpath, target] of subpathEntries) {
+  for (const spec of reachableBareSpecifiers(path.join(root, target))) {
+    if (spec.startsWith("node:") || spec.startsWith("cloudflare:")) continue;
+    if (!PACKAGE_SPECIFIER.test(spec) || /\s/.test(spec)) continue;
+    const name = packageName(spec);
+    if (!declared.has(name)) {
+      fail(
+        `subpath "${subpath}" imports "${spec}", but ${name} is in neither ` +
+          `dependencies nor peerDependencies — it resolves here only because ` +
+          `npm hoisted it, and will not resolve under pnpm or Yarn PnP`
+      );
+    }
+  }
+}
+
 // --- report ------------------------------------------------------------------
 
 if (failures.length > 0) {
@@ -130,5 +192,6 @@ if (failures.length > 0) {
 // stdout to be nothing but its own JSON.
 console.error(
   `✓ ${pkg.name}: ${subpathEntries.length} runtime entries verified, ` +
-    `${Object.keys(pkg.exports ?? {}).length} subpaths resolve, realms isolated`
+    `${Object.keys(pkg.exports ?? {}).length} subpaths resolve, realms isolated, ` +
+    `every import declared`
 );

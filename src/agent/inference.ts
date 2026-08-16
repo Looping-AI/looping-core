@@ -1,5 +1,8 @@
 import type { FinishReason, StepResult, ToolSet } from "ai";
 import { APICallError, RetryError } from "ai";
+// Type-only would not work: this is a runtime guard. `errors.ts` is the neutral
+// sibling of `model.ts` and imports nothing, so this reaches no provider.
+import { CredentialRejectedError } from "./errors.js";
 
 /**
  * Shared Workers-AI plumbing for the agent's inference operations — the pieces
@@ -7,7 +10,7 @@ import { APICallError, RetryError } from "ai";
  *
  * The two loops themselves are deliberately separate, not layered on a common
  * one: the main agent's Session-coupled round lives in
- * {@link file://./turn.ts turn.ts}, and the Session-less subagent loop in
+ * {@link file://../round/turn.ts turn.ts}, and the Session-less subagent loop in
  * {@link file://../subagent/run.ts run.ts}. They share error classification and
  * progress streaming; their control flow has nothing in common worth abstracting.
  */
@@ -59,6 +62,11 @@ function isRetryableStatus(status: number | undefined): boolean {
  * error codes, which arrive as prose on a plain `Error`.
  */
 export function isTransientAiError(err: unknown): boolean {
+  // Checked first because a rejected credential's message can carry "rate
+  // limit"-adjacent prose the fragment scan below would misread as transient.
+  // Note that `false` alone does not protect the fallback slot — see
+  // {@link nonRecoverableKind}, which is what actually stops the ladder.
+  if (nonRecoverableKind(err) !== undefined) return false;
   if (APICallError.isInstance(err)) {
     if (err.isRetryable) return true;
     if (isRetryableStatus(err.statusCode)) return true;
@@ -69,6 +77,87 @@ export function isTransientAiError(err: unknown): boolean {
   return TRANSIENT_MESSAGE_FRAGMENTS.some((fragment) =>
     message.includes(fragment)
   );
+}
+
+/**
+ * Why a round stopped without a second attempt being worth making.
+ *
+ * A stable string rather than the error itself, because this value crosses two
+ * serialization boundaries — the DO's RPC return and a Workflow step result —
+ * and an `Error` survives neither reliably. The host maps it to operator-facing
+ * copy; core never owns that wording.
+ *
+ * The credential kinds are separate strings rather than one, because they have
+ * different remedies and the host cannot tell them apart afterwards:
+ *
+ * - `credential` — the model provider rejected the token. Rotate that one.
+ * - `gateway-credential` — the gateway *in front of* the provider rejected the
+ *   request, which the provider therefore never saw. Rotate the gateway's token
+ *   instead; the model credential is very likely fine.
+ * - `proxy-credential` — an intermediary between the gateway and the provider
+ *   rejected the caller. Notably **not** a token to rotate: the credential it
+ *   refused is minted per request, so the fault is upstream of the secret —
+ *   configuration drift, a rotated signing key, or clock skew.
+ * - `unknown-credential` — a `401`/`403` matching none of the shapes. Says so,
+ *   rather than picking one and sending an operator to rotate a working secret.
+ */
+export type NonRecoverableKind =
+  | "credential"
+  | "gateway-credential"
+  | "proxy-credential"
+  | "unknown-credential";
+
+/**
+ * Why a round ended with no answer — one terminal status, two situations.
+ *
+ * `exhausted` is the ladder run to the end: both slots tried, every repair
+ * spent, nothing usable produced. Every other member is the ladder stopping
+ * early, because nothing further could have cleared the fault — see
+ * {@link nonRecoverableKind}.
+ *
+ * The distinction is a *reason*, not an outcome: both deliver a failed Task with
+ * the same shape. What it decides is the words, and only the host has those (see
+ * `HandleTaskDeps.failureCopy`) — which is why this is a total union rather than
+ * an optional field. A consumer that maps kinds to copy is then a `Record` the
+ * compiler checks, and a new kind cannot be silently ignored by any of them.
+ */
+export type RoundFailureKind = "exhausted" | NonRecoverableKind;
+
+/**
+ * Whether an error is one that **no** further attempt can clear, and the reason.
+ *
+ * This is the third classification, and the one the other two cannot express.
+ * {@link isTransientAiError} splits failures into "retry the step" (`true`) and
+ * "burn this slot, try the fallback" (`false`) — and for a rejected credential
+ * *both* are wrong. Retrying spends the Workflow's budget on a request that can
+ * never succeed; falling back spends the second slot presenting the *same* dead
+ * token. Returning `false` from the transient check only avoids the first.
+ *
+ * So the attempt ladders check this **before** entering the fallback slot and
+ * stop there, and `runHandleTask` ends the Task with copy the host supplies.
+ * Nothing is retried and nothing is spent proving the obvious twice.
+ *
+ * Keyed on {@link file://./errors.ts CredentialRejectedError}, which is neutral
+ * and structurally matched — so a provider outside core raises one and gets this
+ * handling with nothing here to change.
+ */
+export function nonRecoverableKind(
+  err: unknown
+): NonRecoverableKind | undefined {
+  if (!CredentialRejectedError.isInstance(err)) return undefined;
+  switch (err.source) {
+    case "provider":
+      return "credential";
+    case "gateway":
+      return "gateway-credential";
+    case "proxy":
+      return "proxy-credential";
+    // Includes an error that crossed a realm boundary carrying no `source` at
+    // all: `isInstance` is structural, so that is reachable, and "unknown" is
+    // the honest reading of it.
+    default:
+      return "unknown-credential";
+  }
 }
 
 /** A step is "intermediate" when it makes tool calls — more content follows. */

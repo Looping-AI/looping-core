@@ -22,13 +22,23 @@
 export { newTurnBudget, stepAllowance, type TurnBudget } from "./budget.js";
 
 export {
-  createModelRuntime,
   type GatewayMetadata,
   type ModelOverrides,
   type ModelPair,
   type ModelRuntime,
-  type ModelRuntimeDeps
+  type ModelRuntimeFactory
 } from "./model.js";
+
+export {
+  CredentialRejectedError,
+  type CredentialRejectedBy
+} from "./errors.js";
+
+export {
+  createWorkersAIModelRuntime,
+  workersAIModels,
+  type WorkersAIRuntimeDeps
+} from "./workers-ai/index.js";
 
 export {
   appendOnce,
@@ -55,7 +65,10 @@ export {
 export {
   buildIntermediateContentHandler,
   isTransientAiError,
-  type OnContent
+  nonRecoverableKind,
+  type NonRecoverableKind,
+  type OnContent,
+  type RoundFailureKind
 } from "./inference.js";
 
 export {

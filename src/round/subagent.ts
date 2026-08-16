@@ -1,8 +1,9 @@
 import { createAgentRuntime } from "../runtime/index.js";
 import type { AgentPlugin } from "../contract/plugin.js";
-import type { CoreConfigOverrides } from "../config.js";
+import type { CoreConfigOverrides, ModelConfig } from "../config.js";
 import type { AiEnv } from "../env.js";
-import { createModelRuntime } from "../agent/model.js";
+import type { ModelRuntime } from "../agent/model.js";
+import { workersAIModels } from "../agent/workers-ai/index.js";
 import { RecipeSubagentBase, type SubagentRuntime } from "../subagent/index.js";
 import type { PluginHost } from "../host/plugin-host.js";
 
@@ -65,6 +66,26 @@ export abstract class RecipeSubagentHost<
     return (this._rt ??= this.buildRuntime());
   }
 
+  /**
+   * Which provider this facet's chunks run on. Mirrors
+   * {@link file://../host/agent.ts LoopingAgent.modelRuntime}, and **must be
+   * overridden to match it** — a facet that keeps the Workers AI default while
+   * its parent runs on Claude would silently execute every subtask on a
+   * different model than the round that delegated it.
+   *
+   * The two seams take the same arguments precisely so that keeping them in step
+   * needs no discipline: write the provider once as a
+   * {@link file://../agent/model.ts ModelRuntimeFactory} and have both return
+   * it. Two hand-copied `createAnthropicModelRuntime({...})` bodies is what this
+   * shape exists to stop, because nothing type-checks their agreement.
+   *
+   * Takes the model config rather than reading `this.config`, because the facet
+   * resolves its config inside `buildRuntime` and this is called from there.
+   */
+  protected modelRuntime(model: ModelConfig): ModelRuntime {
+    return workersAIModels(this.env, model);
+  }
+
   private buildRuntime(): SubagentRuntime {
     const config = this.agentConfig();
     const runtime = createAgentRuntime({
@@ -91,13 +112,11 @@ export abstract class RecipeSubagentHost<
     return {
       policy: runtime.policy,
       types: runtime.types,
-      models: createModelRuntime({
-        ai: this.env.AI,
-        config: runtime.config.model
-      }),
+      models: this.modelRuntime(runtime.config.model),
       toolFamilies: runtime.toolFamilies,
       toolOutputWindow: runtime.config.toolOutputWindow,
       maxOutputTokens: runtime.config.model.maxOutputTokens,
+      maxRetries: runtime.config.model.maxRetries,
       // Always defined: the plugin that declared a backend, or core's in-memory
       // fallback. So this needs no null check.
       workspaceBacking: runtime.workspaceBacking

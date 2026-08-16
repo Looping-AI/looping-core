@@ -86,10 +86,10 @@ describe("AgentCard fixed point", () => {
   });
 
   it("is ALSO stable with schemes advertised, as of @a2a-js/sdk 1.0.1", () => {
-    // `card.ts` documents the opposite: that a second decode collapses the
-    // `SecurityScheme` oneof to `{}`, breaking the signature, which is why
-    // `advertiseSecuritySchemes` defaults to false. That is no longer true of
-    // the pinned SDK — the scheme survives, and so does the fixed point.
+    // Older SDK releases collapsed the `SecurityScheme` oneof to `{}` on a
+    // second decode, breaking the signature — which is why
+    // `advertiseSecuritySchemes` still defaults to false. The pinned SDK does
+    // not: the scheme survives, and so does the fixed point.
     //
     // Deliberately asserted in the positive so the default can be flipped with
     // evidence rather than hope. If a future SDK regresses, this fails.

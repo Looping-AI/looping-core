@@ -8,6 +8,7 @@ import { deterministicSessionMessage } from "../agent/history.js";
 import { buildRecipeTools, collectToolFamilies } from "./tool-families.js";
 import {
   definePlugin,
+  restrictMainAgentTools,
   PLUGIN_CONTRACT_VERSION,
   type AgentPlugin,
   type MainAgentToolContext,
@@ -233,9 +234,32 @@ describe("createAgentRuntime — what it composes", () => {
     expect(Object.keys(await rt.mainAgentTools(toolCtx()))).toEqual([
       "alphaLookup"
     ]);
+    // Plugin declaration order, with each plugin's own block and its type's
+    // adjacent. Both fixtures declare both, which the contract advises against
+    // for exactly the reason this ordering makes visible: the main agent reads
+    // two introductions to one domain.
     expect(rt.renderCapabilities()).toBe(
-      "Alpha capability block.\n\nBeta capability block."
+      [
+        "Alpha capability block.",
+        "You can delegate alpha work.",
+        "Beta capability block.",
+        "You can delegate beta work."
+      ].join("\n\n")
     );
+  });
+
+  it("renders a capability block declared only on a plugin's subtask type", () => {
+    // The contract tells a plugin with a subtask type to declare its block on
+    // the *type* and leave `AgentPlugin.capability` unset. Following that advice
+    // has to reach the soul, or the block is written and never read.
+    const rt = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [
+        definePlugin({ key: "gamma", subtaskType: subtaskType("gamma") })
+      ]
+    });
+
+    expect(rt.renderCapabilities()).toBe("You can delegate gamma work.");
   });
 
   it("awaits a plugin that shapes its tool surface from session state", async () => {
@@ -634,5 +658,105 @@ describe("buildRecipeTools", () => {
     ]);
 
     expect(buildRecipeTools(["plain"], registry, ctx).abort).toBeUndefined();
+  });
+});
+
+describe("restrictMainAgentTools", () => {
+  /** A plugin with a full surface: three main-agent tools, a family, a binding. */
+  const sandboxish = (): AgentPlugin =>
+    definePlugin({
+      key: "sandboxish",
+      mainAgentTools: () =>
+        ({
+          sb_exec: tool({ description: "run", inputSchema: z.object({}) }),
+          sb_read: tool({ description: "read", inputSchema: z.object({}) }),
+          sb_write: tool({ description: "write", inputSchema: z.object({}) })
+        }) satisfies ToolSet,
+      toolFamilies: { sandbox: noopFamily("sb_exec") },
+      capability: "You can run anything.",
+      requires: { bindings: ["Sandbox"] }
+    });
+
+  it("keeps only the allowed tools and swaps the capability block", async () => {
+    const runtime = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [
+        restrictMainAgentTools(sandboxish(), {
+          allow: ["sb_read"],
+          capability: "You can read, not write."
+        })
+      ]
+    });
+
+    expect(Object.keys(await runtime.mainAgentTools(toolCtx()))).toEqual([
+      "sb_read"
+    ]);
+    // The plugin's own block advertises `sb_exec`, which the parent no longer
+    // has — leaving it in place is how a model spends a turn calling a tool
+    // that is not there.
+    expect(runtime.renderCapabilities()).toBe("You can read, not write.");
+  });
+
+  /**
+   * The whole reason this helper exists rather than "just don't install it".
+   *
+   * `validateRecipe` runs on the parent, so a family the parent does not
+   * register is dropped from every recipe the parent validates — and the
+   * subagent loses a capability nobody meant to take away.
+   */
+  it("keeps the tool family and the binding requirement registered", () => {
+    const runtime = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [restrictMainAgentTools(sandboxish(), { allow: [] })]
+    });
+
+    expect([...runtime.policy.knownToolFamilies]).toEqual(["sandbox"]);
+    expect(runtime.requirements.bindings).toEqual(["Sandbox"]);
+  });
+
+  it("removes the main-agent surface and the capability block entirely on an empty allowlist", async () => {
+    const runtime = createAgentRuntime({
+      config: { model: TEST_MODELS },
+      plugins: [restrictMainAgentTools(sandboxish(), { allow: [] })]
+    });
+
+    expect(await runtime.mainAgentTools(toolCtx())).toEqual({});
+    expect(runtime.renderCapabilities()).toBe("");
+  });
+
+  it("logs the plugin and tool name when the allowlist names a tool that is gone", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const runtime = createAgentRuntime({
+        config: { model: TEST_MODELS },
+        plugins: [
+          restrictMainAgentTools(sandboxish(), {
+            allow: ["sb_read", "sb_renamed"],
+            capability: "read only"
+          })
+        ]
+      });
+
+      // The surviving tool still comes through: one typo must not take the
+      // others with it.
+      expect(Object.keys(await runtime.mainAgentTools(toolCtx()))).toEqual([
+        "sb_read"
+      ]);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/sandboxish.*sb_renamed/s)
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("does not mutate the plugin it was given", async () => {
+    const original = sandboxish();
+    restrictMainAgentTools(original, { allow: [] });
+
+    expect(original.capability).toBe("You can run anything.");
+    expect(Object.keys(await original.mainAgentTools!(toolCtx()))).toHaveLength(
+      3
+    );
   });
 });
