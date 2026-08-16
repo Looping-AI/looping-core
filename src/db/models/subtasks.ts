@@ -274,12 +274,19 @@ export function makeSubtasks(db: DB, opts: SubtaskModelOptions) {
      * Running Subtasks are left alone here — the parent transitions those with
      * {@link cancelRunning} once their in-flight result comes back and is
      * discarded. Returns the number canceled.
+     *
+     * Keyed on the Task rather than one id, so this is the one guarded
+     * transition that cannot go through {@link transition} and sets its own
+     * timestamps. `completedAt` is part of that and not optional: every other
+     * terminal write records it, and a terminal row without one reads as still
+     * in flight to anything measuring how long a Subtask took or when a Task
+     * actually stopped.
      */
     cancelPending(taskId: string): number {
       const now = Date.now();
       const canceled = db
         .update(subtasks)
-        .set({ status: "canceled", updatedAt: now })
+        .set({ status: "canceled", updatedAt: now, completedAt: now })
         .where(and(eq(subtasks.taskId, taskId), eq(subtasks.status, "pending")))
         .returning({ id: subtasks.id })
         .all();

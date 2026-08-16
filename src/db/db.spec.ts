@@ -266,6 +266,59 @@ describe("subtasks", () => {
     expect(outcome.final?.status).toBe("completed");
   });
 
+  /**
+   * `completedAt` is what says a row stopped, and every terminal write owes one.
+   * `cancelPending` is the only one that cannot go through the shared
+   * `transition` helper — it is keyed on the Task, not an id — so it is the only
+   * one that can drift, and a canceled row without a `completedAt` reads as
+   * still in flight to anything measuring duration.
+   */
+  it("stamps completedAt on every terminal transition, bulk cancellation included", async () => {
+    const outcome = await withDb("completed-at", async (db) => {
+      await db.ensureReady();
+      // The fourth row is deliberately not destructured: it is never started,
+      // so it is the one the bulk sweep below has to reach.
+      const [done, failed, canceledRunning] = db.subtasks.createDecomposition(
+        "t1",
+        1,
+        [
+          draft("done"),
+          draft("failed"),
+          draft("canceled-running"),
+          draft("canceled-pending")
+        ]
+      );
+      const recipe = { recipeId: "r", recipeVersion: 1 };
+
+      db.subtasks.start(done.id, recipe);
+      db.subtasks.complete(done.id, [{ kind: "text", text: "ok" }]);
+
+      db.subtasks.start(failed.id, recipe);
+      db.subtasks.fail(failed.id, "boom");
+
+      db.subtasks.start(canceledRunning.id, recipe);
+      db.subtasks.cancelRunning(canceledRunning.id);
+
+      const swept = db.subtasks.cancelPending("t1");
+
+      return { swept, rows: db.subtasks.list("t1") };
+    });
+
+    expect(outcome.swept).toBe(1);
+    expect(outcome.rows.map((r) => r.status)).toEqual([
+      "completed",
+      "failed",
+      "canceled",
+      "canceled"
+    ]);
+    for (const row of outcome.rows) {
+      expect(
+        row.completedAt,
+        `${row.status} row is missing completedAt`
+      ).toEqual(expect.any(Number));
+    }
+  });
+
   it("refuses to record a completed subtask with no usable output", async () => {
     await withDb("empty-result", async (db) => {
       await db.ensureReady();
