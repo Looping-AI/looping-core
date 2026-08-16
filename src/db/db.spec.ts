@@ -33,13 +33,11 @@ const page = (over: Partial<TaskListQuery> = {}): TaskListQuery => ({
   ...over
 });
 
-const draft = (localKey: string, over: Partial<SubtaskDraft> = {}) =>
+const draft = (name: string, over: Partial<SubtaskDraft> = {}) =>
   ({
-    localKey,
     type: "generic",
-    prompt: `do ${localKey}`,
+    prompt: `do ${name}`,
     references: [],
-    dependsOn: [],
     params: {},
     ...over
   }) satisfies SubtaskDraft;
@@ -219,30 +217,18 @@ describe("subtasks", () => {
     expect(again.map((s) => s.id)).toEqual(first.map((s) => s.id));
   });
 
-  it("refuses duplicate local keys within one round", async () => {
-    await withDb("dup-keys", async (db) => {
+  it("continues ordinals across rounds, so a later round sorts after an earlier one", async () => {
+    // Ordinal is the Task-wide position and the unique index is built on it, so
+    // a second round must start above every row the first one wrote.
+    const rows = await withDb("ordinals-across-rounds", async (db) => {
       await db.ensureReady();
-      expect(() =>
-        db.subtasks.createDecomposition("t1", 1, [draft("a"), draft("a")])
-      ).toThrow(/duplicate draft local key: a/);
-    });
-  });
-
-  it("resolves dependency edges that point forward to a later draft", async () => {
-    // Every key is registered before any edge is checked, precisely so an edge
-    // may name a draft defined further down the list.
-    const rows = await withDb("forward-edge", async (db) => {
-      await db.ensureReady();
-      return db.subtasks.createDecomposition("t1", 1, [
-        draft("first", { dependsOn: ["second"] }),
-        draft("second")
-      ]);
+      db.subtasks.createDecomposition("t1", 0, [draft("a"), draft("b")]);
+      db.subtasks.createDecomposition("t1", 1, [draft("c")]);
+      return db.subtasks.list("t1");
     });
 
-    expect(rows).toHaveLength(2);
-    const first = rows.find((r) => r.prompt === "do first");
-    const second = rows.find((r) => r.prompt === "do second");
-    expect(first?.dependsOn).toEqual([second?.id]);
+    expect(rows.map((r) => r.ordinal)).toEqual([0, 1, 2]);
+    expect(rows.map((r) => r.prompt)).toEqual(["do a", "do b", "do c"]);
   });
 
   it("guards each status transition so a late loser cannot overwrite a result", async () => {
@@ -278,6 +264,59 @@ describe("subtasks", () => {
     expect(outcome.completed).toBe(true);
     expect(outcome.failedLate).toBe(false);
     expect(outcome.final?.status).toBe("completed");
+  });
+
+  /**
+   * `completedAt` is what says a row stopped, and every terminal write owes one.
+   * `cancelPending` is the only one that cannot go through the shared
+   * `transition` helper — it is keyed on the Task, not an id — so it is the only
+   * one that can drift, and a canceled row without a `completedAt` reads as
+   * still in flight to anything measuring duration.
+   */
+  it("stamps completedAt on every terminal transition, bulk cancellation included", async () => {
+    const outcome = await withDb("completed-at", async (db) => {
+      await db.ensureReady();
+      // The fourth row is deliberately not destructured: it is never started,
+      // so it is the one the bulk sweep below has to reach.
+      const [done, failed, canceledRunning] = db.subtasks.createDecomposition(
+        "t1",
+        1,
+        [
+          draft("done"),
+          draft("failed"),
+          draft("canceled-running"),
+          draft("canceled-pending")
+        ]
+      );
+      const recipe = { recipeId: "r", recipeVersion: 1 };
+
+      db.subtasks.start(done.id, recipe);
+      db.subtasks.complete(done.id, [{ kind: "text", text: "ok" }]);
+
+      db.subtasks.start(failed.id, recipe);
+      db.subtasks.fail(failed.id, "boom");
+
+      db.subtasks.start(canceledRunning.id, recipe);
+      db.subtasks.cancelRunning(canceledRunning.id);
+
+      const swept = db.subtasks.cancelPending("t1");
+
+      return { swept, rows: db.subtasks.list("t1") };
+    });
+
+    expect(outcome.swept).toBe(1);
+    expect(outcome.rows.map((r) => r.status)).toEqual([
+      "completed",
+      "failed",
+      "canceled",
+      "canceled"
+    ]);
+    for (const row of outcome.rows) {
+      expect(
+        row.completedAt,
+        `${row.status} row is missing completedAt`
+      ).toEqual(expect.any(Number));
+    }
   });
 
   it("refuses to record a completed subtask with no usable output", async () => {

@@ -181,10 +181,9 @@ describe("rendering for the model", () => {
     expect(rendered).toContain("- `summarize`: summarize the conversation");
   });
 
-  it("collects only the capability blocks that were declared", () => {
-    expect(types.renderCapabilities()).toBe("You can play games.");
-    expect(makeSubtaskTypes([noParams]).renderCapabilities()).toBe("");
-  });
+  // A type's capability block is asserted in `runtime/index.spec.ts` instead:
+  // the runtime is the only thing that renders one, so that is where "declared
+  // on the type, and it reached the soul" can actually be shown.
 
   it("injects the agent's control-tool names into delegation guidance", () => {
     // Guidance legitimately names those tools; injecting them is what lets a

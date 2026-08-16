@@ -168,9 +168,8 @@ export function controlTools(opts: {
             `${DELEGATE_TOOL_NAME} input is invalid — ${issues(parsed.error)}`
           );
         }
-        // Everything past the schema — unknown reference indexes, dependency
-        // cycles, a type's required params — throws its own error, already worded
-        // for the model.
+        // Everything past the schema — unknown reference indexes, a type's
+        // required params — throws its own error, already worded for the model.
         const { reply, drafts } = resolveDecomposition(
           {
             ...parsed.data,
@@ -194,11 +193,12 @@ export function controlTools(opts: {
  * Drop params the model sent as an explicit `undefined`.
  *
  * The delegate schema declares the union of every type's param keys, all optional,
- * so one tool schema can serve every type (see `subtaskParamProperties`). A model
- * that names a key and leaves it empty has sent no param, and forwarding the key
- * with an `undefined` value would only make a missing required param report itself
- * as a *present* one. Whether what survives satisfies the type is still
- * `validateSubtaskParams`'s call, downstream.
+ * so one tool schema can serve every type (see
+ * `SubtaskTypeRegistry.paramProperties`). A model that names a key and leaves it
+ * empty has sent no param, and forwarding the key with an `undefined` value would
+ * only make a missing required param report itself as a *present* one. Whether
+ * what survives satisfies the type is still
+ * `SubtaskTypeRegistry.validateParams`'s call, downstream.
  */
 function definedParams(
   params: Record<string, string | undefined> | undefined
@@ -212,7 +212,8 @@ function definedParams(
 
 /**
  * A zod failure as one line the model can act on: which field, and what was wrong.
- * The same rendering {@link file://./subtasks/subtask-types.ts validateSubtaskParams}
+ * The same rendering
+ * {@link file://../subtasks/subtask-types.ts SubtaskTypeRegistry.validateParams}
  * uses, so every rejection a control call can produce reads the same way.
  */
 function issues(error: z.ZodError): string {

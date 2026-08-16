@@ -1,14 +1,25 @@
-import { createWorkersAI } from "workers-ai-provider";
 import type { LanguageModel } from "ai";
 import type { ModelConfig } from "../config.js";
 
 /**
- * The Workers-AI model pair every loop runs on, built per agent instance.
+ * The provider contract every loop runs against — and nothing that implements
+ * it.
  *
- * The predecessor read `env.AI` and five config constants as module-level
- * imports. Neither survives packaging: `env` does not exist at module scope on
- * Workers, and a module constant cannot be overridden by a consumer. So this is
- * a factory over an injected binding and an injected {@link ModelConfig}.
+ * {@link ModelRuntime} is the whole seam: an agent that returns one runs every
+ * loop in core unchanged, because nothing downstream — the round loop, the
+ * control-tool repair ladder, the Session's compaction, the Workflow — ever sees
+ * more than a `LanguageModel` from `ai`. It never learns which provider produced
+ * it.
+ *
+ * The implementations are siblings under `agent/`, one directory each:
+ * {@link file://./workers-ai/index.ts `./workers-ai`} is core's default, and
+ * {@link file://./anthropic/index.ts `./anthropic`} is Claude behind an optional
+ * peer dependency. A third provider is a third directory exporting one
+ * {@link ModelRuntimeFactory}; nothing here has to change to admit it.
+ *
+ * Which is why this file has no runtime imports at all. The Workers AI factory
+ * used to live in it, and a contract that ships one implementation inline reads
+ * as *the* runtime with an escape hatch, rather than as one of N.
  */
 
 /**
@@ -26,15 +37,16 @@ export interface ModelOverrides {
   /** Test override for the fallback slot. */
   fallbackModel?: LanguageModel;
   /**
-   * Workers-AI id for the primary slot (a recipe's, already code-validated
-   * against the allowlist by `validateRecipe`). Defaults to the configured
+   * The provider's model id for the primary slot. Defaults to the configured
    * `chatModelId`.
+   *
+   * The subagent path passes `ValidatedRecipe.primaryModelId`, which is the
+   * host's own configured id — `validateRecipe` copies the pair on, and a recipe
+   * has no field to name a model with. So this parameterizes the pair without
+   * ever widening which models are reachable.
    */
   primaryModelId?: string;
-  /**
-   * Workers-AI id for the fallback slot (already code-validated). Defaults to
-   * the configured `fallbackChatModelId`.
-   */
+  /** The provider's model id for the fallback slot. See {@link primaryModelId}. */
   fallbackModelId?: string;
   /** AI Gateway log metadata for correlation — see {@link GatewayMetadata}. */
   metadata?: GatewayMetadata;
@@ -51,68 +63,31 @@ export interface ModelPair {
 export interface ModelRuntime {
   /**
    * Lazily build + memoize a primary/fallback model pair (overridable in tests,
-   * id-parameterized for recipes). No allowlisting happens here —
-   * `validateRecipe` is the single validation owner for recipe-supplied ids.
+   * id-parameterized so a subagent can run the pair its validated recipe
+   * carries). Nothing is checked here — the ids reaching this can only be the
+   * host's own, which `resolveConfig` has already proven non-empty and distinct.
    */
   createModelPair(overrides?: ModelOverrides): ModelPair;
 }
 
-export interface ModelRuntimeDeps {
-  /** The `AI` binding. Read lazily — see {@link createModelRuntime}. */
-  ai: Ai;
-  config: ModelConfig;
-}
-
 /**
- * Build the model runtime for one agent instance.
+ * How a provider is supplied to an agent: given the Worker env and the agent's
+ * *resolved* model config, return a runtime.
  *
- * The provider is constructed on first *use*, not here. During `wrangler deploy`
- * Cloudflare evaluates module scope to validate the new version, and bindings
- * are not populated at that point — constructing eagerly makes `createWorkersAI`
- * throw "you must provide either a binding or credentials". The same laziness
- * protects a consumer who builds their runtime early.
+ * Both base-class seams — `LoopingAgent.modelRuntime` and
+ * `RecipeSubagentHost.modelRuntime` — take this shape, which is the point of it.
+ * A provider written as one of these is defined once and referenced from the
+ * agent and its subagent facet, instead of being spelled out twice in two class
+ * bodies that nothing keeps in step. See
+ * {@link file://./workers-ai/runtime.ts workersAIModels} for core's own.
+ *
+ * Config arrives as an argument rather than being read off `this`: the facet
+ * resolves its config inside `buildRuntime` and calls the seam from there, so
+ * there is no `this.config` to read at that point — and a factory that cannot
+ * reach for one cannot disagree with its caller about which gateway the agent
+ * is on.
  */
-export function createModelRuntime(deps: ModelRuntimeDeps): ModelRuntime {
-  const { config } = deps;
-  let provider: ReturnType<typeof createWorkersAI> | undefined;
-  const workersai = () =>
-    (provider ??= createWorkersAI({
-      binding: deps.ai,
-      gateway: { id: config.aiGatewayId }
-    }));
-
-  /**
-   * Per-model Workers-AI settings: pin the gateway id (so per-call metadata does
-   * not drop the gateway route), attach correlation metadata when supplied, and
-   * set the reasoning budget.
-   *
-   * Always returns a settings object, even with no metadata: `reasoning_effort`
-   * has to reach the binding on every call, and an `undefined` return drops it.
-   */
-  const chatSettings = (metadata?: GatewayMetadata) => ({
-    gateway: { id: config.aiGatewayId, ...(metadata ? { metadata } : {}) },
-    reasoning_effort: config.reasoningEffort
-  });
-
-  return {
-    createModelPair(overrides: ModelOverrides = {}): ModelPair {
-      const primaryId = overrides.primaryModelId ?? config.chatModelId;
-      const fallbackId =
-        overrides.fallbackModelId ?? config.fallbackChatModelId;
-      let primary: LanguageModel | undefined;
-      let fallback: LanguageModel | undefined;
-      const settings = chatSettings(overrides.metadata);
-      return {
-        primary: () =>
-          (primary ??= overrides.model ?? workersai()(primaryId, settings)),
-        fallback: () =>
-          (fallback ??=
-            overrides.fallbackModel ??
-            overrides.model ??
-            workersai()(fallbackId, settings)),
-        primaryId: () => primaryId,
-        fallbackId: () => fallbackId
-      };
-    }
-  };
-}
+export type ModelRuntimeFactory<TEnv> = (
+  env: TEnv,
+  config: ModelConfig
+) => ModelRuntime;

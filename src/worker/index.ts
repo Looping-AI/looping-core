@@ -32,18 +32,11 @@ import type { MountedAgent } from "./define-agent.js";
  * The A2A Worker: the zero-trust, no-shared-secrets edge every Looping agent
  * puts in front of its Durable Object.
  *
- * Three routes, in order:
- *
- *  1. The card-signing **public** JWKS at the card's `jku`.
- *  2. A **signed** AgentCard at `…/.well-known/agent-card.json`, so a gateway can
- *     verify and pin this agent's identity at registration ("G knows R").
- *  3. **Verify the gateway's identity JWT** on every JSON-RPC call against the
- *     gateway's public JWKS ("R knows G"), then run the A2A JSON-RPC server for
- *     that call. {@link A2AExecutor} dispatches into the caller's agent DO — one
- *     instance per calling gateway-agent, keyed by the verified `identity.key`.
- *
- * No secret is ever shared in either direction: trust flows entirely on domains
- * and asymmetric (Ed25519) signatures over public JWKS.
+ * Trust flows entirely on domains and asymmetric (Ed25519) signatures over
+ * public JWKS: a gateway verifies and pins this agent's identity from its signed
+ * card at registration ("G knows R"), and this Worker verifies the gateway's
+ * identity JWT on every JSON-RPC call ("R knows G"). No secret is ever shared in
+ * either direction.
  *
  * **Several agents share one Worker, addressed by `tenant`.** They share one
  * origin, one endpoint, one signing key and one card at the well-known path;

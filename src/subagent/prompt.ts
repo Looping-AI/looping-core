@@ -3,11 +3,10 @@ import type { ValidatedRecipe } from "../contract/recipe.js";
 
 /**
  * Deterministic rendering of one subagent invocation. Pure — no model, no
- * Session, no lookups: everything comes verbatim from the request. The four
+ * Session, no lookups: everything comes verbatim from the request. The three
  * sections stay clearly separated and labeled so tests (and the model) can tell
- * them apart: the execution's budget, the main-agent instruction, the verbatim
- * conversation reference snapshots, and generated dependency output — which is
- * explicitly marked as generated and never presented as conversation evidence.
+ * them apart: the execution's budget, the main-agent instruction, and the
+ * verbatim conversation reference snapshots.
  */
 
 /**
@@ -44,7 +43,7 @@ function renderBudget(limits: ValidatedRecipe["limits"]): string {
 export interface RenderedInvocation {
   /** The validated Recipe soul, verbatim — the invocation's system prompt. */
   system: string;
-  /** The sectioned user message (instruction, references, dependency results). */
+  /** The sectioned user message (budget, instruction, references). */
   prompt: string;
 }
 
@@ -71,17 +70,6 @@ export function renderSubagentPrompt(
     sections.push(
       "# Conversation references (verbatim snapshots of the caller's conversation)\n" +
         refs.join("\n")
-    );
-  }
-
-  if (request.dependencyResults.length > 0) {
-    const deps = request.dependencyResults.map((dep) => {
-      const text = dep.resultParts.map((part) => part.text).join("\n");
-      return `[dependency ${dep.subtaskId}] (${dep.type}): ${text}`;
-    });
-    sections.push(
-      "# Dependency results (generated output from prerequisite subtasks — not conversation evidence)\n" +
-        deps.join("\n")
     );
   }
 

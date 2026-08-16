@@ -6,9 +6,8 @@ import { createCompactFunction } from "agents/experimental/memory/utils";
 import { sessionText } from "./history.js";
 
 /**
- * The one continuous {@link Session} an agent Durable Object owns. Ported from
- * the looping-gateway admin agent's `shared/session.ts` (single Session per DO —
- * soul + memory + compaction).
+ * The one continuous {@link Session} an agent Durable Object owns: soul + memory
+ * + compaction, one Session per DO.
  *
  * Compaction is the one **lossy** thing this module does, so it is also the one
  * thing it announces: `onMessagesDisplaced` hands over the raw messages a
@@ -38,7 +37,7 @@ export interface SessionLike {
    * Read one message by id, or null. Reads the **raw stored row**, so it is
    * unaffected by compaction overlays — a message folded into a summary is still
    * readable here. That is what makes {@link appendOnce}'s read-back a reliable
-   * recovery path for a phase whose Workflow step re-ran.
+   * recovery path for a round whose Workflow step re-ran.
    */
   getMessage(id: string): Promise<SessionMessage | null>;
   refreshSystemPrompt(): Promise<string>;
@@ -52,13 +51,13 @@ export interface SessionLike {
  * is **durably stored** under that id.
  *
  * `Session.appendMessage` is already idempotent by id: appending an id that
- * exists is a no-op. The read-back is what matters for a re-run phase — if the
- * step crashed after appending and the retry re-inferred a *different* reply, the
+ * exists is a no-op. The read-back is what matters for a re-run step — if it
+ * crashed after appending and the retry re-inferred a *different* reply, the
  * append no-ops and this returns the original, durable text. The Session and the
  * value the caller goes on to deliver therefore never disagree.
  *
  * Falls back to the message's own text if the read-back returns null (it cannot,
- * having just been appended) rather than failing a phase over a missing echo.
+ * having just been appended) rather than failing a round over a missing echo.
  */
 export async function appendOnce(
   session: SessionLike,

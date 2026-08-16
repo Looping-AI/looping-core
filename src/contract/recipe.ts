@@ -53,12 +53,10 @@ export interface DelegationNames {
  *
  * Deliberately *not* here: how a run is sliced into durable chunks. That is a
  * Workers step-timeout constraint, it is identical for every Recipe, and it lives
- * in {@link file://../platform.ts}. It used to include a `turnsPerChunk`, on the
- * theory that a turn count could keep a step under the timeout — it cannot,
- * because nothing predicts how long a turn takes, and the resulting arithmetic was
- * wrong by 2-3× in practice.
- */
-/**
+ * in {@link file://../platform.ts}. A turn count cannot do that job — nothing
+ * predicts how long a turn takes — so no per-chunk turn budget belongs on a
+ * Recipe.
+ *
  * Structurally identical to {@link AgentLimits} — a budget is a budget at both
  * levels, and keeping one shape means `resolveLimits` merges a recipe's
  * declaration straight over the host's baseline with no translation. Aliased
@@ -84,35 +82,23 @@ export interface ResolvedRecipe {
   version: number;
   // A recipe states **no model**, and there is no field here to state one with.
   //
-  // It briefly could, as an optional "preference" that `validateRecipe`
-  // substituted away for any id outside the host's allowlist. That capability
-  // was empty and harmful in equal measure:
-  //
-  // - **Empty.** The allowlist is built in exactly one place, from exactly the
-  //   host's two configured models. So a preference could never reach a third
-  //   model — the cheaper, smaller one the feature was documented as being
-  //   for. All it could express was "run me on the host's *fallback* instead of
-  //   its primary", which nothing wants.
-  // - **Harmful.** The two slots substituted independently, so preferring the
-  //   host's fallback as a primary and omitting the fallback landed the same id
-  //   in both — silently defeating the distinct-pair invariant `resolveConfig`
-  //   enforces, and turning the fallback into a retry against the model that
-  //   just failed.
-  //
   // Which model an agent runs on is the agent's decision, made once in its
   // config. A recipe describes *what work is* — soul, tools, budget, context —
   // and a plugin shipping one has no idea what its consumer is billed for.
   //
   // {@link ValidatedRecipe} carries the resolved pair, because a runner needs
   // one. It comes from the host, always, with no way for recipe data to
-  // influence it.
+  // influence it. See `validateRecipe` for what recipe-stated models cost when
+  // they were briefly allowed.
   /** Required, never defaulted — see `validateRecipe`. */
   soul: string;
   toolFamilies: string[];
   enabled: boolean;
   /**
-   * Only the budget fields this Recipe overrides; the rest come from
-   * `SUBAGENT_LIMITS`. `{}` means "the baseline", which is what most Recipes want.
+   * Only the budget fields this Recipe overrides; the rest come from the host's
+   * `CoreConfig.subagentLimits`, which reaches validation as
+   * `RecipePolicy.baselineLimits`. `{}` means "the baseline", which is what most
+   * Recipes want.
    */
   limits: Partial<RecipeLimits>;
   /**
@@ -138,8 +124,8 @@ export interface ValidatedRecipe extends ResolvedRecipe {
    *
    * These exist only here, never on {@link ResolvedRecipe}, and that asymmetry
    * is the design: a recipe cannot state a model, so the only way to hold one is
-   * to have been through {@link validateRecipe}, which copies the host's. Recipe
-   * data has no path to influence them.
+   * to have been through `validateRecipe`, which copies the host's. Recipe data
+   * has no path to influence them.
    *
    * Guaranteed non-empty and guaranteed distinct, because `resolveConfig`
    * refuses a config that is either — so the fallback is always a genuinely
@@ -177,9 +163,9 @@ export interface SubtaskTypeSpec {
    *
    * A `z.object`, not an opaque `z.ZodType`, and that is load-bearing: the agent
    * reads `.shape` back to build the `params` field of the delegate tool's schema
-   * (see `subtaskParamProperties`). Declaring a param the model is never shown is
-   * the failure this shape exists to prevent — describe each key with
-   * `.describe()`, because that text is what the model reads.
+   * (see `SubtaskTypeRegistry.paramProperties`). Declaring a param the model is
+   * never shown is the failure this shape exists to prevent — describe each key
+   * with `.describe()`, because that text is what the model reads.
    */
   params: SubtaskParamsSchema | null;
   /** How the model is told to obtain each param, appended to the description. */
@@ -191,10 +177,9 @@ export interface SubtaskTypeSpec {
    *
    * These two prompt fields exist to hold one rule: **everything the main agent
    * is told about a domain is declared here, never written inside the runtime.**
-   * Both of them started as hand-written blocks in `agent/prompt.ts` and
-   * `agent/turn.ts`; the main agent read the same advice twice per round from two
-   * files that had already drifted into contradicting each other on how many
-   * subtasks a multi-game request gets.
+   * Advice written in the runtime instead has to be repeated per call site, and
+   * the copies drift — into telling the main agent two contradictory things
+   * about the same domain, twice per round.
    */
   capability?: string;
   /**

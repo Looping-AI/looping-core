@@ -1,7 +1,8 @@
 import type { ResolvedRecipe, SubtaskParams } from "../contract/recipe.js";
+import type { RoundFailureKind } from "../agent/inference.js";
 
 export type SubtaskStatus =
-  "pending" | "running" | "completed" | "failed" | "skipped" | "canceled";
+  "pending" | "running" | "completed" | "failed" | "canceled";
 
 /** A per-caller, SQLite-assigned, monotonically increasing Subtask identifier. */
 export type SubtaskId = number;
@@ -28,18 +29,15 @@ export interface SubtaskResultPart {
 }
 
 /**
- * Creation input for one Subtask, before it is persisted. `dependsOn` uses
- * draft-local keys (not yet-unknown {@link SubtaskId}s); the data layer resolves
- * them to SQLite-assigned ids when the decomposition is created. `ordinal` is
- * derived from the draft's position in the decomposition array.
+ * Creation input for one Subtask, before it is persisted. `ordinal` is derived
+ * from the draft's position in the decomposition array, which is the only thing
+ * that distinguishes one draft of a decomposition from another — they carry no
+ * identity of their own until the data layer assigns a {@link SubtaskId}.
  */
 export interface SubtaskDraft {
-  localKey: string;
   type: string;
   prompt: string;
   references: SubtaskReference[];
-  /** Draft-local keys of prerequisite drafts. */
-  dependsOn: string[];
   /** The type's required inputs, already validated for shape. */
   params: SubtaskParams;
 }
@@ -103,24 +101,10 @@ export interface SubtaskChunkOutcome {
 }
 
 /**
- * Generated output of one completed prerequisite Subtask, loaded by the parent
- * from its durable row for a dependent's invocation. `type` is the
- * prerequisite's semantic type — used only to label the rendered section;
- * dependency output is always presented as generated, never as conversation
- * evidence.
- */
-export interface DependencyResult {
-  subtaskId: SubtaskId;
-  type: string;
-  resultParts: SubtaskResultPart[];
-}
-
-/**
  * RPC-safe input for one isolated `RecipeSubagent` execution, assembled by the
  * parent at execution start: the already-resolved (and code-validated) Recipe,
- * the Subtask's non-session prompt, its verbatim reference snapshots, and the
- * generated results of its completed dependencies. The child re-validates the
- * Recipe defensively but never resolves one itself.
+ * the Subtask's non-session prompt, and its verbatim reference snapshots. The
+ * child re-validates the Recipe defensively but never resolves one itself.
  */
 export interface RecipeExecutionRequest {
   taskId: string;
@@ -134,7 +118,6 @@ export interface RecipeExecutionRequest {
   recipe: ResolvedRecipe;
   prompt: string;
   references: SubtaskReference[];
-  dependencyResults: DependencyResult[];
   /**
    * The Subtask's validated params. Part of the execution's identity — two plays
    * of different games are different work — so this IS fingerprinted, unlike
@@ -160,11 +143,9 @@ export type RecipeExecutionResult =
  * One Subtask as the delegating model emits it. The model selects references
  * by **catalog index only** — it never emits reference text, and application code
  * snapshots the catalog entry's exact role+text onto the Subtask (see
- * `agent/subtasks/decomposition.ts`). `dependsOn` uses draft-local keys, resolved
- * to SQLite-assigned {@link SubtaskId}s by the data layer.
+ * `agent/subtasks/decomposition.ts`).
  */
 export interface SubtaskProposal {
-  localKey: string;
   type: string;
   prompt: string;
   /**
@@ -173,8 +154,6 @@ export interface SubtaskProposal {
    * *reconstructed* historical call, whose references were resolved rounds ago.
    */
   referenceIndexes?: number[];
-  /** Draft-local keys of prerequisite proposals. */
-  dependsOn: string[];
   /** The type's required inputs; omitted for a type that takes none. */
   params?: SubtaskParams;
 }
@@ -196,18 +175,19 @@ export interface DecompositionProposal {
  *
  * `replied` is the terminal answer — the round chose to answer the user rather
  * than delegate, and the Workflow delivers it. `delegated` means the round's
- * Subtask rows are durable and Phase 2 should run them, after which another round
- * begins. `failed` means both models produced unusable output; no Subtask is ever
- * synthesized to cover for it. `canceled` means the caller cancelled during the
- * round: nothing was persisted and nothing was published. Transient platform
- * faults are not results: they throw so the enclosing Workflow step can retry
- * (mirrors {@link RecipeExecutionResult}).
+ * Subtask rows are durable and the Workflow should execute them, after which
+ * another round begins. `failed` means the round produced no answer, with
+ * {@link RoundFailureKind} carrying why; no Subtask is ever synthesized to cover
+ * for it. `canceled` means the caller cancelled during the round: nothing was
+ * persisted and nothing was published. Transient platform faults are not
+ * results: they throw so the enclosing Workflow step can retry (mirrors
+ * {@link RecipeExecutionResult}).
  *
  * `turns` is what this round cost, which the Workflow meters against the Task's
  * budget. This is the **only** type that carries it, and it carries it because the
  * count has to cross an RPC boundary to reach a Workflow in another isolate;
- * everything inside the DO shares one mutable {@link file://../budget.ts TurnBudget}
- * instead. The field is attached in a single place — see `runTaskTurn` — so no
+ * everything inside the DO shares one mutable
+ * {@link file://../agent/budget.ts TurnBudget} instead. The field is attached in a single place — see `runTaskTurn` — so no
  * branch can drop it and no branch can invent it.
  *
  * The idempotent recovery paths — a round replayed from durable rows rather than
@@ -222,7 +202,14 @@ export interface DecompositionProposal {
 export type TurnTaskResult =
   | { status: "replied"; reply: string; turns: number }
   | { status: "delegated"; reply: string; subtasks: Subtask[]; turns: number }
-  | { status: "failed"; error: string; turns: number }
+  /**
+   * `kind` distinguishes a round that spent both models and got nothing usable
+   * (`exhausted`) from one that stopped on a fault no attempt could clear —
+   * where the fallback was deliberately *not* tried, and the kind is what lets
+   * the host say why in words an operator can act on. Same terminal Task either
+   * way; only the words differ.
+   */
+  | { status: "failed"; kind: RoundFailureKind; error: string; turns: number }
   | { status: "canceled"; turns: number };
 
 /**
@@ -242,15 +229,13 @@ export type TurnVerdict = WithoutTurns<TurnTaskResult>;
 /**
  * One branch's outcome as a later round sees it — a plain, RPC-safe subset of the
  * durable {@link Subtask} row, loaded across **every** round in stable ordinal
- * order. Completed, failed, and skipped branches are all included so the reply
- * can use available successes and disclose relevant failures.
+ * order. Completed and failed branches are both included so the reply can use
+ * available successes and disclose relevant failures.
  *
- * Carries `round`, `prompt` and `dependsOn` — not for composing, but for
- * reconstructing the per-round `delegate` call that produced these branches (see
- * `agent/subtasks/delegate.ts`). Unlike {@link SubtaskNode}, this projection is
- * built inside the DO and returns only a reply, so the 1 MiB Workflow-step cap
- * that keeps the scheduler's view narrow does not apply. `references` still stays
- * out: it is unbounded history text, and the call's shape does not need it.
+ * Carries `round` and `prompt` — not for composing, but for reconstructing the
+ * per-round `delegate` call that produced these branches (see
+ * `agent/subtasks/delegate.ts`). `references` stays out: it is unbounded history
+ * text, and the call's shape does not need it.
  */
 export interface CompositionBranch {
   subtaskId: SubtaskId;
@@ -258,7 +243,6 @@ export interface CompositionBranch {
   ordinal: number;
   type: string;
   prompt: string;
-  dependsOn: SubtaskId[];
   params: SubtaskParams;
   status: SubtaskStatus;
   resultParts: SubtaskResultPart[] | null;
@@ -266,31 +250,19 @@ export interface CompositionBranch {
 }
 
 /**
- * The `scan:<n>` wave projection (RPC-safe): either the caller cancelled, or the
- * refreshed DAG after blocked branches were skipped. Returning the verdict with
- * the nodes is what lets the Workflow drop its separate cancellation probe — one
- * round trip, and no gap between asking and acting.
+ * The `scan:<round>` projection (RPC-safe): either the caller cancelled, or the
+ * ids of the round's Subtasks that still owe an outcome, in ordinal order.
+ * Returning the verdict with the ids is what lets the Workflow drop its separate
+ * cancellation probe — one round trip, and no gap between asking and acting.
+ *
+ * Ids and nothing else, deliberately: a Workflow step return is capped at 1 MiB
+ * and a Subtask carries verbatim history snapshots bounded only by
+ * `MAX_INBOUND_TEXT_BYTES`, so a scan returning rows would overflow on a large
+ * task. The durable rows are the source of truth; the Workflow carries
+ * references to them and re-reads through the parent when it needs more.
  */
 export type SubtaskScan =
-  { canceled: true } | { canceled: false; nodes: SubtaskNode[] };
-
-/**
- * The scheduler's view of one Subtask (Phase 2) — everything needed to pick the
- * next dependency-ready wave, and nothing else.
- *
- * Deliberately excludes `prompt`, `references`, and `resultParts`: a Workflow
- * step return is capped at 1 MiB, and a reference is a verbatim history snapshot
- * bounded only by `MAX_INBOUND_TEXT_BYTES`, so a wave scan returning full rows
- * would overflow on a large task. The durable rows — not Workflow state — are the
- * source of truth, so the Workflow carries ids and statuses and re-reads the rest
- * through the parent when it actually needs it.
- */
-export interface SubtaskNode {
-  id: SubtaskId;
-  ordinal: number;
-  status: SubtaskStatus;
-  dependsOn: SubtaskId[];
-}
+  { canceled: true } | { canceled: false; ids: SubtaskId[] };
 
 /** Durable state owned by the main agent for one delegated unit of work. */
 export interface Subtask {
@@ -305,7 +277,6 @@ export interface Subtask {
   recipeVersion: number | null;
   prompt: string;
   references: SubtaskReference[];
-  dependsOn: SubtaskId[];
   /** The type's required inputs, validated at delegation time. */
   params: SubtaskParams;
   status: SubtaskStatus;

@@ -11,7 +11,7 @@ import { ConfigError, DEFAULT_CORE_CONFIG, resolveConfig } from "../config.js";
 import type { SessionMessage } from "agents/experimental/memory/session";
 
 /**
- * The session seam the phased agent loop depends on.
+ * The session seam the round loop depends on.
  *
  * Two properties carry real weight here, and both exist because a Workflow step
  * can re-run: appends are exactly-once by deterministic id, and what a caller

@@ -24,7 +24,7 @@ export interface ReferenceCatalogEntry extends SubtaskReference {
  * reference.
  *
  * This is the single eligibility rule, and it has exactly one caller:
- * {@link file://../turn.ts renderTurnMessages} numbers the messages it accepts
+ * {@link file://../round/turn.ts renderTurnMessages} numbers the messages it accepts
  * *and* marks those same messages with their `[ref N]` index, in one pass. One
  * predicate, one walk — the marked messages and the catalog indices cannot drift.
  *

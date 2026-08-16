@@ -64,8 +64,8 @@ export const notifyTasks = sqliteTable(
  *
  * The integer primary key assigns a caller-local, monotonically increasing
  * `SubtaskId` (autoincrement, so ids are never reused after cleanup deletes
- * rows). References, dependency edges, and result parts are stored as JSON text
- * and parsed back into the `Subtask` contract by `models/subtasks.ts`.
+ * rows). References and result parts are stored as JSON text and parsed back
+ * into the `Subtask` contract by `models/subtasks.ts`.
  * `recipe_id`/`recipe_version` are null until execution starts, then record the
  * resolved recipe after the fact.
  */
@@ -86,8 +86,6 @@ export const subtasks = sqliteTable(
     prompt: text("prompt").notNull(),
     /** JSON `SubtaskReference[]` — verbatim role+text snapshots from decomposition. */
     referencesJson: text("references_json").notNull(),
-    /** JSON `SubtaskId[]` — resolved dependency edges. */
-    dependsOnJson: text("depends_on_json").notNull(),
     /** JSON `SubtaskParams` — the type's required inputs, validated at delegation. */
     paramsJson: text("params_json").notNull().default("{}"),
     status: text("status").notNull(),

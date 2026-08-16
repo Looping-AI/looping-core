@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { nonBlank } from "../subtasks/decomposition.js";
 
@@ -15,7 +15,7 @@ import { nonBlank } from "../subtasks/decomposition.js";
  * So prose is no longer an outcome. Both endings are now named tools, the round runs
  * with `toolChoice: "required"`, and a round that ends any other way has failed its
  * attempt. The *choice* is still entirely the model's — the point of the design (see
- * {@link file://./turn.ts turn.ts}) was never that the model be steered toward
+ * {@link file://../round/turn.ts turn.ts}) was never that the model be steered toward
  * delegating, only that it not be forced. Picking between two named tools is also a
  * far easier discrimination for a small model than picking between prose and a tool,
  * which is what the weaker fallback models kept getting wrong.
@@ -25,16 +25,6 @@ import { nonBlank } from "../subtasks/decomposition.js";
 
 export const FINAL_REPLY_TOOL_NAME = "final_reply";
 
-/**
- * The tool as the model sees it. **Without `execute`**, exactly like
- * {@link file://./subtasks/delegate.ts delegateTool}: the call *is* the round's
- * output, so there is nothing for the SDK to run and the loop halts on it.
- *
- * Unlike `delegate`, this call is never reconstructed in a later round's history —
- * a past reply is stored as, and replayed as, ordinary assistant text (history is
- * text-only by design). The tool exists to constrain *generation*, not to become a
- * new shape in the transcript.
- */
 /**
  * The call's input, exported as the zod schema rather than only as the tool's
  * `inputSchema`, because the round has to run it itself.
@@ -51,7 +41,34 @@ export const finalReplyInputSchema = z.object({
   )
 });
 
-export const finalReplyTool = tool({
+/**
+ * The tool as the model sees it. **Without `execute`**, exactly like
+ * {@link file://../subtasks/delegate.ts delegateTool}: the call *is* the round's
+ * output, so there is nothing for the SDK to run and the loop halts on it.
+ *
+ * Unlike `delegate`, this call is never reconstructed in a later round's history —
+ * a past reply is stored as, and replayed as, ordinary assistant text (history is
+ * text-only by design). The tool exists to constrain *generation*, not to become a
+ * new shape in the transcript.
+ */
+/*
+ * Annotated, not inferred, and the annotation is a **packaging** constraint
+ * rather than a style choice.
+ *
+ * `tool()` returns `Tool<Input, Output, Context>`, and `Context` lives in
+ * `@ai-sdk/provider-utils` — an internal of `ai`, which resolves it as a nested
+ * copy. Left inferred, `tsc` emits `import("@ai-sdk/provider-utils").Context`
+ * into this module's `.d.ts`, so every consumer typechecking
+ * `@loopingai/core/agent` needs a package this one does not declare and cannot
+ * usefully declare: pinning it here installs a *second*, different major
+ * alongside `ai`'s own, and TypeScript then refuses the reference outright as
+ * unportable.
+ *
+ * Naming the type through `ai`'s own re-export keeps the emitted declaration
+ * pointing at a package that is already a required peer. `verify:exports` walks
+ * the declaration graph for exactly this.
+ */
+export const finalReplyTool: Tool<{ text: string }> = tool({
   description:
     "Answer the user and end this round. Use this whenever the request is yours to answer — anything about this conversation, your own history, memory, or tools, and anything you can settle with the tools available to you here, including work that has already come back to you.",
   inputSchema: finalReplyInputSchema

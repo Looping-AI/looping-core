@@ -42,7 +42,6 @@ const request = (
   recipe: recipe(),
   prompt: "do the thing",
   references: [],
-  dependencyResults: [],
   params: {},
   ...over
 });
@@ -146,8 +145,8 @@ describe("what MUST change the fingerprint", () => {
   });
 
   it("preserves semantic array order", async () => {
-    // References and dependency results are built from ordinal-ordered rows, so
-    // order is meaning, not incidental.
+    // References are built from ordinal-ordered rows, so order is meaning, not
+    // incidental.
     const refs = [
       { role: "user" as const, text: "one" },
       { role: "user" as const, text: "two" }

@@ -14,8 +14,8 @@ export const FINGERPRINT_VERSION = 1;
  * Canonical JSON of the fields that define an execution's identity, rebuilt as
  * literals in fixed key order so `JSON.stringify` is deterministic (object
  * insertion order). Array order is semantic and preserved: the parent builds
- * references and dependency results from ordinal-ordered rows, so a retry of the
- * same execution is byte-identical.
+ * references from ordinal-ordered rows, so a retry of the same execution is
+ * byte-identical.
  *
  * **Limits are canonicalized as *declared*, not as merged.** The predecessor
  * merged them against the house baseline first, on the reasoning that `{}` and
@@ -40,13 +40,12 @@ export function canonicalRequest(request: RecipeExecutionRequest): string {
     recipe: {
       key: request.recipe.key,
       version: request.recipe.version,
-      // No model ids. They used to be hashed because a recipe declared them;
-      // it no longer can, and their absence here is the same trade this file
-      // already makes for `limits`: the host's own configuration stays out of
-      // the fingerprint, so changing it does not invalidate every checkpoint at
-      // once and restart every in-flight run from turn zero with its budget
-      // already spent. A run that resumes on a newly configured model resumes
-      // from conversation state, which is model-independent.
+      // No model ids. Their absence is the same trade this file already makes
+      // for `limits`: the host's own configuration stays out of the fingerprint,
+      // so changing it does not invalidate every checkpoint at once and restart
+      // every in-flight run from turn zero with its budget already spent. A run
+      // that resumes on a newly configured model resumes from conversation
+      // state, which is model-independent.
       soul: request.recipe.soul,
       toolFamilies: request.recipe.toolFamilies,
       enabled: request.recipe.enabled,
@@ -58,14 +57,6 @@ export function canonicalRequest(request: RecipeExecutionRequest): string {
     references: request.references.map((ref) => ({
       role: ref.role,
       text: ref.text
-    })),
-    dependencyResults: request.dependencyResults.map((dep) => ({
-      subtaskId: dep.subtaskId,
-      type: dep.type,
-      resultParts: dep.resultParts.map((part) => ({
-        kind: part.kind,
-        text: part.text
-      }))
     })),
     // Params ARE identity: the same prompt against a different external resource
     // is different work, and must not replay a cached result. Key order is fixed

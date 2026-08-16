@@ -21,7 +21,9 @@ export {
 export {
   PLUGIN_CONTRACT_VERSION,
   definePlugin,
+  restrictMainAgentTools,
   type AgentPlugin,
+  type RestrictMainAgentToolsOptions,
   type EmitProgress,
   type EnrichResultContext,
   type MainAgentToolContext,
@@ -72,6 +74,7 @@ export {
 export {
   CHUNK_SOFT_MS,
   MAX_CHUNKS_PER_BRANCH,
+  MAX_TOOL_CALL_MS,
   STEP_TIMEOUT_MS,
   STEPS_PER_INSTANCE
 } from "./platform.js";

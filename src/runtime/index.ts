@@ -84,8 +84,10 @@ export interface AgentRuntime {
   /** Tools the installed plugins offer the *main* agent, merged. */
   mainAgentTools(ctx: MainAgentToolContext): Promise<ToolSet>;
   /**
-   * Every plugin's `capability` block, for the main agent's soul. Returns `""`
-   * when none declares one, so a call site can append unconditionally.
+   * The capability blocks for the main agent's soul, in plugin declaration
+   * order: each plugin's own {@link AgentPlugin.capability} and the one on its
+   * {@link AgentPlugin.subtaskType}, if it declares either. Returns `""` when
+   * none does, so a call site can append unconditionally.
    */
   renderCapabilities(): string;
   /**
@@ -286,7 +288,13 @@ export function createAgentRuntime(
     renderCapabilities(): string {
       const blocks: string[] = [];
       for (const plugin of plugins) {
+        // Both blocks a plugin may declare, emitted adjacently: a plugin that
+        // declares a subtask type puts its capability on the *type*, and one
+        // that only offers main-agent tools puts it on the plugin. Declaring
+        // both is legal and means the model reads both.
         if (plugin.capability) blocks.push(plugin.capability);
+        if (plugin.subtaskType?.capability)
+          blocks.push(plugin.subtaskType.capability);
       }
       return blocks.join("\n\n");
     },
