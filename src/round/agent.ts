@@ -156,6 +156,9 @@ export abstract class RoundAgentBase<
     turnsRemaining: number;
     push?: TurnPushContext;
   }): Promise<TurnTaskResult> {
+    // Before anything can reach a model: a round that calls out mint-signed
+    // needs this deployment's own origin, and this is where it arrives.
+    this.noteSelfOrigin(input.push?.jku);
     const budget = newTurnBudget(input.turnsRemaining);
     const verdict = await this.decideRound(input, budget);
     return { ...verdict, turns: budget.spent };
@@ -399,6 +402,10 @@ export abstract class RoundAgentBase<
     chunk: number,
     push?: TurnPushContext
   ): Promise<SubtaskChunkOutcome> {
+    // Recorded here rather than left to `this.push(push)` below, which runs only
+    // after the chunk has already executed — and the child is handed this
+    // origin on the way in.
+    this.noteSelfOrigin(push?.jku);
     const prepared = await this.prepareChunk(id);
     if (prepared.kind === "terminal") {
       return { done: true, status: prepared.subtask.status, progress: [] };
@@ -620,15 +627,23 @@ export abstract class RoundAgentBase<
     chunk: number,
     runtime: SubtaskRuntime
   ): Promise<RecipeChunkResult> {
+    // A facet has no request path of its own: it is reached only from here, so
+    // this is the only way it can learn what this deployment is called. Passed
+    // as its own argument, never folded into `request`, for the same reason
+    // `chunk` is — the request is fingerprinted, and an origin that legitimately
+    // differs between two chunks of one run must not make a retry look like a
+    // different execution. Undefined only on an instance no turn has reached,
+    // where the facet's own `requireSelfOrigin` produces the readable error.
+    const selfOrigin = this.selfOrigin();
     const child = await this.subAgent(this.subagentClass(), name);
     try {
-      return await child.executeChunk(request, chunk, runtime);
+      return await child.executeChunk(request, chunk, runtime, selfOrigin);
     } catch (err) {
       if (!String(err).includes(FINGERPRINT_MISMATCH)) throw err;
       console.warn("[agent] stale subagent state, recreating", { name });
       await this.deleteSubAgent(this.subagentClass(), name);
       const fresh = await this.subAgent(this.subagentClass(), name);
-      return await fresh.executeChunk(request, chunk, runtime);
+      return await fresh.executeChunk(request, chunk, runtime, selfOrigin);
     }
   }
 

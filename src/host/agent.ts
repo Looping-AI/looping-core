@@ -19,6 +19,7 @@ import {
   type PushChannel,
   type TurnPushContext
 } from "../a2a/push.js";
+import { SelfOrigin } from "../a2a/self-origin.js";
 import { buildAgentSession, type SessionLike } from "../agent/session.js";
 import type {
   GatewayMetadata,
@@ -90,6 +91,13 @@ export abstract class LoopingAgent<
    * not depend on it surviving.
    */
   private identityKey?: string;
+
+  /**
+   * This deployment's own public origin, learned from the `jku` every turn
+   * carries. See {@link SelfOrigin} for why it is discovered rather than
+   * configured, and why it is not persisted.
+   */
+  private readonly selfOriginMemo = new SelfOrigin();
 
   /**
    * Test-only model injection. A **field**, not a constructor argument or an RPC
@@ -315,8 +323,40 @@ export abstract class LoopingAgent<
     return (this.identityKey = key);
   }
 
+  /**
+   * Record this deployment's own origin from a value that carries it.
+   *
+   * Called wherever a {@link TurnPushContext} arrives — here for every agent
+   * shape, and at the entry of `RoundAgentBase`'s two RPCs, where the origin is
+   * needed *before* this channel would be built. Idempotent and cheap: an
+   * unusable value is ignored rather than thrown, because a turn must not fail
+   * over this.
+   */
+  protected noteSelfOrigin(url: string | undefined): void {
+    this.selfOriginMemo.note(url);
+  }
+
+  /**
+   * This deployment's own public origin, if a turn has carried it to this
+   * instance yet. See {@link SelfOrigin}.
+   */
+  protected selfOrigin(): string | undefined {
+    return this.selfOriginMemo.peek();
+  }
+
+  /**
+   * The same, for a caller that cannot proceed without it — signing a caller
+   * token with {@link file://../a2a/caller-token.ts signCallerToken} above all,
+   * whose `iss` this is. Throws naming the timing rather than producing a token
+   * with a nonsense issuer.
+   */
+  protected requireSelfOrigin(): string {
+    return this.selfOriginMemo.require();
+  }
+
   /** The gateway callback channel for one turn. See {@link PushChannel}. */
   protected push(context: TurnPushContext): PushChannel {
+    this.noteSelfOrigin(context.jku);
     return createPushChannel(this.env.A2A_SIGNING_KEY, context);
   }
 

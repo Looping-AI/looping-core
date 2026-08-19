@@ -65,6 +65,8 @@ export { deliverTerminalTask, type DeliverTerminalOptions } from "./deliver.js";
 
 export { signCallerToken, type CallerTokenOptions } from "./caller-token.js";
 
+export { SelfOrigin } from "./self-origin.js";
+
 export { callerContext } from "./caller.js";
 
 export {

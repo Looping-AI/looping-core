@@ -39,11 +39,12 @@ optional is a plugin. Anything opinionated belongs to your app.
 npx looping-keys
 ```
 
-Set the private JWK as `A2A_SIGNING_KEY` (`.dev.vars` locally, `wrangler secret put`
-when deployed) and the origins you accept calls from as `GATEWAY_ORIGINS`:
+Set the private JWK as `A2A_SIGNING_KEY` (`.env` locally; `wrangler deploy
+--secrets-file .env` or `wrangler secret put` when deployed) and the origins you accept
+calls from as `GATEWAY_ORIGINS`:
 
 ```ini
-# .dev.vars
+# .env
 A2A_SIGNING_KEY={"crv":"Ed25519","d":"…","x":"…","kty":"OKP","kid":"a2a-2026-08-01"}
 GATEWAY_ORIGINS=["https://gateway.example.com"]
 ```
@@ -267,6 +268,33 @@ The agent's card is signed over its **wire (protobuf-JSON) encoding**, which is 
 makes the served document a fixed point under the repeated decoding a verifier
 performs. A gateway pins the card's `kid` + `jku` on first registration
 (Trust-On-First-Use).
+
+### Calling out, and knowing your own origin
+
+The same key proves this agent to services that are not the gateway — an inference
+proxy, another agent. `signCallerToken` mints the short-lived token for that: `iss` is
+this deployment's origin, `jku` is derived from it, and the audience is normalized to a
+bare origin because the far side compares it byte-for-byte.
+
+Its `iss` is **not** something to configure. Inside a Durable Object it is:
+
+```ts
+protected override modelRuntime(model: ModelConfig): ModelRuntime {
+  return myProvider(this.env, model, () => this.requireSelfOrigin());
+}
+```
+
+`requireSelfOrigin()` (and `selfOrigin()`, which returns `undefined` instead of
+throwing) answer with the origin core already delivers: the executor computes the
+callback `jku` from `new URL(request.url).origin`, and it rides every turn into the DO
+and on into each subagent facet. A `SELF_ORIGIN` secret only restates that, and has to
+be kept byte-identical with the verifier's allowlist by hand in every environment.
+
+Nothing is pinned or persisted — a Worker answers on its custom domain, its
+`workers.dev` name and every preview URL, so the value follows the origin the request
+actually arrived on. It is known **inside a turn or a chunk**: `onStart`, a constructor
+and a scheduled callback all run before any request has said what this deployment is
+called, and `requireSelfOrigin()` throws there saying so.
 
 ---
 
