@@ -1,3 +1,5 @@
+import type { WorkflowStepConfig } from "cloudflare:workers";
+
 /**
  * What the Cloudflare Workflows runtime imposes, and the two numbers derived from
  * it. Nothing here is a budget or a preference — see {@link file://./config.ts}
@@ -112,3 +114,35 @@ export const MAX_TOOL_CALL_MS = 10 * 60_000;
  * 2. The worst-case step product stays under {@link STEPS_PER_INSTANCE}.
  */
 export const MAX_CHUNKS_PER_BRANCH = 40;
+
+/**
+ * What a step holding a model call or a container command configures instead of
+ * inheriting Workflows' defaults. Both defaults were measured wrong for this
+ * workload.
+ *
+ * **`timeout`.** The default is ten minutes. A step here holds a model call and
+ * its provider retries, or a container command running a project's test suite;
+ * neither fits in ten minutes reliably, and neither uses meaningful CPU while it
+ * waits. Left inherited, that default silently became the ceiling
+ * {@link CHUNK_SOFT_MS} was sized against.
+ *
+ * **`retries`.** The default is five attempts with exponential backoff from ten
+ * seconds. Against a fault that is not transient — a severed Durable Object stub
+ * — that produced five failures in under 10ms each, spread across 160 seconds of
+ * backoff that bought nothing. Three attempts still cover a genuinely transient
+ * fault, since the model call has its own provider-level retry underneath this,
+ * and a flat five-second delay stops a fast permanent failure being paid for at
+ * exponential rates.
+ *
+ * Here rather than in `/round` because the agent that most needs it may not be a
+ * round agent: a single-inference agent runs one model call in one step and has
+ * the same two problems, and importing this from `/round` would put the whole
+ * delegation engine in its bundle.
+ *
+ * For the **short** bookkeeping steps — `working`, `complete`, `notify` and
+ * friends — the defaults are fine and a shared config would only hide that.
+ */
+export const CHUNK_STEP: WorkflowStepConfig = {
+  timeout: STEP_TIMEOUT_MS,
+  retries: { limit: 3, delay: 5_000, backoff: "constant" }
+};
