@@ -19,6 +19,7 @@ import {
   type PushChannel,
   type TurnPushContext
 } from "../a2a/push.js";
+import { SelfOrigin } from "../a2a/self-origin.js";
 import { buildAgentSession, type SessionLike } from "../agent/session.js";
 import type {
   GatewayMetadata,
@@ -90,6 +91,18 @@ export abstract class LoopingAgent<
    * not depend on it surviving.
    */
   private identityKey?: string;
+
+  /**
+   * This deployment's own public origin, learned from the `jku` every turn
+   * carries and **pinned on the first one** this instance serves.
+   *
+   * Unlike {@link identityKey} this is shared by concurrent turns — the object
+   * is keyed by caller, not by origin — so it is pinned rather than
+   * last-write-wins: an immutable field cannot change under a credential thunk
+   * that reads it while a turn awaits a model call. See {@link SelfOrigin} for
+   * the full argument, and for why nothing is persisted.
+   */
+  private readonly selfOriginMemo = new SelfOrigin();
 
   /**
    * Test-only model injection. A **field**, not a constructor argument or an RPC
@@ -315,8 +328,43 @@ export abstract class LoopingAgent<
     return (this.identityKey = key);
   }
 
+  /**
+   * Offer this deployment's own origin from a value that carries it. The first
+   * usable one is kept for the life of the instance.
+   *
+   * Called wherever a {@link TurnPushContext} arrives — here for every agent
+   * shape, and at the entry of `RoundAgentBase`'s two RPCs, where the origin is
+   * needed *before* this channel would be built. All three matter because any of
+   * them can be the call that wakes a fresh isolate. Cheap and unfailing: past
+   * the first turn it is one truthiness check, and an unusable value is ignored
+   * rather than thrown, because a turn must not fail over this.
+   */
+  protected noteSelfOrigin(url: string | undefined): void {
+    this.selfOriginMemo.note(url);
+  }
+
+  /**
+   * This deployment's own public origin, if a turn has carried it to this
+   * instance yet. Constant once set, so it reads the same from any turn running
+   * on this object. See {@link SelfOrigin}.
+   */
+  protected selfOrigin(): string | undefined {
+    return this.selfOriginMemo.peek();
+  }
+
+  /**
+   * The same, for a caller that cannot proceed without it — signing a caller
+   * token with {@link file://../a2a/caller-token.ts signCallerToken} above all,
+   * whose `iss` this is. Throws naming the timing rather than producing a token
+   * with a nonsense issuer.
+   */
+  protected requireSelfOrigin(): string {
+    return this.selfOriginMemo.require();
+  }
+
   /** The gateway callback channel for one turn. See {@link PushChannel}. */
   protected push(context: TurnPushContext): PushChannel {
+    this.noteSelfOrigin(context.jku);
     return createPushChannel(this.env.A2A_SIGNING_KEY, context);
   }
 

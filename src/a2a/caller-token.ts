@@ -17,6 +17,12 @@ export interface CallerTokenOptions {
    * This agent's own origin. It becomes `iss`, and `jku` is derived from it, and
    * the two must agree: a verifier that accepts a `jku` on a different origin
    * than `iss` lets one allowlisted origin impersonate another.
+   *
+   * **Not something to configure.** Inside a Durable Object it is
+   * `requireSelfOrigin()` — see {@link file://./self-origin.ts SelfOrigin},
+   * which learns it from the `jku` every turn already carries. A `SELF_ORIGIN`
+   * secret restates what the request path knows and has to be kept
+   * byte-identical with the verifier's allowlist by hand.
    */
   issuer: string;
   /**

@@ -21,6 +21,7 @@ import {
   SubtaskParamsError,
   type SubtaskTypeRegistry
 } from "../subtasks/subtask-types.js";
+import { SelfOrigin } from "../a2a/self-origin.js";
 import { renderSubagentPrompt } from "./prompt.js";
 import { makeWorkspaceHandle, type WorkspaceBacking } from "./workspace.js";
 import { fingerprintRequest } from "./fingerprint.js";
@@ -154,6 +155,15 @@ export abstract class RecipeSubagentBase<
    */
   private inflight?: AbortController;
 
+  /**
+   * This deployment's own public origin, as the parent DO passes it on every
+   * chunk, pinned from the first. In memory for the same reason {@link inflight}
+   * is: a facet is reached only through {@link executeChunk}, so an instance that
+   * lost it is an instance that will be told again before it can run anything.
+   * See {@link SelfOrigin}.
+   */
+  private readonly selfOriginMemo = new SelfOrigin();
+
   async onStart(): Promise<void> {
     this.ensureTables();
   }
@@ -191,21 +201,45 @@ export abstract class RecipeSubagentBase<
   }
 
   /**
+   * This deployment's own public origin, if the parent has passed it to this
+   * instance yet. See {@link SelfOrigin}.
+   */
+  protected selfOrigin(): string | undefined {
+    return this.selfOriginMemo.peek();
+  }
+
+  /**
+   * The same, for a caller that cannot proceed without it — a facet that signs
+   * its own caller tokens, above all. Mirrors `LoopingAgent.requireSelfOrigin`,
+   * because a facet must run on the same provider, and so the same credential
+   * path, as the parent that delegated to it.
+   */
+  protected requireSelfOrigin(): string {
+    return this.selfOriginMemo.require();
+  }
+
+  /**
    * Execute one durable chunk of a Subtask under the parent's resolved Recipe.
    *
    * A terminal outcome (completed / failed) is cached and replayed on retry. A
    * mid-run chunk persists its rolling state to `run_state` and returns a
-   * `done: false` yield for the Workflow to run another chunk. `chunk` is a
-   * separate argument — never part of `request` — so every chunk fingerprints
-   * identically and the cache/resume keys line up. Only transient platform faults
-   * throw (nothing cached), so a Workflow retry resumes from the last checkpoint.
+   * `done: false` yield for the Workflow to run another chunk. `chunk` and
+   * `selfOrigin` are separate arguments — never part of `request` — so every
+   * chunk fingerprints identically and the cache/resume keys line up. Only
+   * transient platform faults throw (nothing cached), so a Workflow retry
+   * resumes from the last checkpoint.
    */
   async executeChunk(
     request: RecipeExecutionRequest,
     _chunk: number,
-    runtime: SubtaskRuntime = {}
+    runtime: SubtaskRuntime = {},
+    selfOrigin?: string
   ): Promise<RecipeChunkResult> {
     this.ensureTables();
+    // Before `subagentRuntime()`, which is where a host builds its model runtime
+    // — and a facet running on a provider it authenticates to mint-signed reads
+    // this origin from there.
+    this.selfOriginMemo.note(selfOrigin);
     const rt = this.subagentRuntime();
     const fingerprint = await fingerprintRequest(request);
 
