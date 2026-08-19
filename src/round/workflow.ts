@@ -1,8 +1,13 @@
 import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
-import { MAX_CHUNKS_PER_BRANCH, STEP_TIMEOUT_MS } from "../platform.js";
+import {
+  CHUNK_STEP,
+  MAX_CHUNKS_PER_BRANCH,
+  STEP_TIMEOUT_MS
+} from "../platform.js";
 import type { CoreConfig } from "../config.js";
 import { buildCompletedTask, buildFailedTask } from "../a2a/notify.js";
-import { createPushChannel, type TurnPushContext } from "../a2a/push.js";
+import type { TurnPushContext } from "../a2a/push.js";
+import { deliverTerminalTask } from "../a2a/deliver.js";
 import type { GatewayIdentity } from "../a2a/verify.js";
 import type { RoundFailureKind } from "../agent/inference.js";
 import type { SubtaskId } from "../subtasks/types.js";
@@ -149,37 +154,6 @@ type AgentStub = DurableObjectStub<RoundAgentBase>;
  * already resolves this way for the same reason.
  */
 type ResolveAgent = () => AgentStub;
-
-/**
- * What the long steps configure instead of inheriting.
- *
- * Both halves of this were previously left at Workflows' defaults, and both
- * defaults were wrong for this workload.
- *
- * **`timeout`.** The default is ten minutes. Nothing here passed a config, so that
- * default silently became the ceiling {@link CHUNK_SOFT_MS} was sized against —
- * see the note on `STEP_TIMEOUT_MS` in `platform.ts` for what that cost. A step
- * here holds a model call and its provider retries, or a container command running
- * a project's test suite; neither fits in ten minutes reliably and neither uses
- * meaningful CPU while it waits.
- *
- * **`retries`.** The default is five attempts with exponential backoff from ten
- * seconds. The failure documented on {@link ResolveAgent} is what that produces
- * when the fault is not transient: five retries against a severed stub, each
- * failing in under 10ms, spread across 160 seconds of backoff that bought nothing.
- * Three attempts still cover a genuinely transient fault — the model call has its
- * own provider-level retry underneath this — and a flat five-second delay stops a
- * fast, permanent failure from being paid for at exponential rates.
- *
- * Deliberately applied only to the chunk steps — see {@link turnStep} for why a
- * round does not share it. The short bookkeeping steps (`working`, `deadline:`,
- * `scan:`, `complete`, `notify`) are sub-second projections where the defaults
- * are fine and a shared config would only hide that.
- */
-const CHUNK_STEP: WorkflowStepConfig = {
-  timeout: STEP_TIMEOUT_MS,
-  retries: { limit: 3, delay: 5_000, backoff: "constant" }
-};
 
 /**
  * The same retries, and a timeout a **round** can actually be measured against.
@@ -518,16 +492,9 @@ async function runBranch(
  * and is deliberately not given a kind of its own until something needs to tell
  * it apart.
  *
- * The Task is built **inside** the step and returned, so `notify` posts exactly
- * what was persisted: building it in the body would re-stamp `new Date()` on
- * every replay and post a Task that differs from the stored one.
- *
- * **The guarded write is the cancellation check.** `saveTask` refuses to write a
- * terminal state over a `canceled` row and says so, and it does that read and
- * write in one synchronous pass inside the DO. Probing first and saving second
- * would leave a window — between the two calls, and again between this step and
- * `notify` — in which a `tasks/cancel` lands and the gateway still receives a
- * `completed` callback. Keying the notify on "did the write apply" closes it.
+ * The delivery itself is {@link deliverTerminalTask}, which is shared with agents
+ * that never delegate. What is a round's own is the two things passed to it: the
+ * choice of terminal Task, and the child sweep.
  */
 async function deliver(
   p: HandleTaskParams,
@@ -543,47 +510,29 @@ async function deliver(
     (failure && deps.failureCopy?.(failure.kind, failure.detail)) ||
     deps.policy.copy.taskFailed;
 
-  const task = await step.do("complete", async () => {
-    const terminal =
-      reply !== null
-        ? buildCompletedTask(p.taskId, p.contextId, reply)
-        : buildFailedTask(p.taskId, p.contextId, failedText);
-    return (await agent().saveTask(terminal)) ? terminal : null;
-  });
-  if (!task) return;
-
-  // Sweep this Task's managed children now that it is terminal and every `execute`
-  // step has unwound. Deleting them here — rather than right after each successful
-  // chunk — keeps `deleteSubAgent`'s facet-abort from landing on a still-open
-  // `executeChunk` RPC, which telemetry mis-records as a failure. Best-effort and
-  // idempotent, so it is safe on replay.
-  //
-  // Caught, not left to propagate: the terminal Task is already durably saved, so
-  // a sweep that still fails once the step's own retries are exhausted must not
-  // block `notify` below — the gateway is owed its result regardless of whether
-  // this Task's children were reclaimed.
-  try {
-    await step.do("sweep", async () => {
-      await agent().sweepTaskChildren(p.taskId);
-    });
-  } catch (err) {
-    console.error("[handle-task] sweep failed after retries", {
-      taskId: p.taskId,
-      err: String(err)
-    });
-  }
-
-  // Notify the gateway: a card-key-signed callback POST. Retried by the step on a
-  // non-2xx; the terminal messageId is deterministic and the gateway is
-  // idempotent/single-use, so retries are safe. If it ultimately fails, the
-  // gateway's own reaction backstop clears the pending marker.
-  await step.do("notify", async () => {
-    await createPushChannel(deps.signingKey, {
+  await deliverTerminalTask(step, {
+    push: {
       taskId: p.taskId,
       contextId: p.contextId,
       pushUrl: p.pushUrl,
       pushToken: p.pushToken,
       jku: p.jku
-    }).deliver(task);
+    },
+    signingKey: deps.signingKey,
+    // `agent()` inside the body, never hoisted: a stub is a live connection and
+    // a severed one never reconnects.
+    saveTask: (task) => agent().saveTask(task),
+    terminal: () =>
+      reply !== null
+        ? buildCompletedTask(p.taskId, p.contextId, reply)
+        : buildFailedTask(p.taskId, p.contextId, failedText),
+    // Sweep this Task's managed children now that it is terminal and every
+    // `execute` step has unwound. Deleting them here — rather than right after
+    // each successful chunk — keeps `deleteSubAgent`'s facet-abort from landing
+    // on a still-open `executeChunk` RPC, which telemetry mis-records as a
+    // failure. Best-effort and idempotent, so it is safe on replay.
+    sweep: async () => {
+      await agent().sweepTaskChildren(p.taskId);
+    }
   });
 }

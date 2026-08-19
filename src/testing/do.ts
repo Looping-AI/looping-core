@@ -11,11 +11,11 @@ import { AgentDB, type AgentDBOptions } from "../db/db.js";
  * pre-selecting a table.
  */
 
-export interface DoTestHelpers {
+export interface DoTestHelpers<T extends Rpc.DurableObjectBranded | undefined> {
   /** Fresh, unique DO stub per test — state never leaks between tests. */
-  freshStub(label: string): DurableObjectStub;
+  freshStub(label: string): DurableObjectStub<T>;
   /** Run `fn` inside a fresh DO instance with a migrated {@link AgentDB}. */
-  withDb<T>(label: string, fn: (db: AgentDB) => T): Promise<T>;
+  withDb<R>(label: string, fn: (db: AgentDB) => R): Promise<R>;
 }
 
 /**
@@ -33,16 +33,18 @@ export function doStorage(instance: unknown): DurableObjectStorage {
  * const { freshStub, withDb } = makeDoHelpers(env.MyAgent);
  * ```
  */
-export function makeDoHelpers(
-  ns: DurableObjectNamespace,
+export function makeDoHelpers<
+  T extends Rpc.DurableObjectBranded | undefined = undefined
+>(
+  ns: DurableObjectNamespace<T>,
   defaults: AgentDBOptions = { maxSubtasks: 8 }
-): DoTestHelpers {
+): DoTestHelpers<T> {
   const freshStub = (label: string) =>
     ns.get(ns.idFromName(`test:${label}:${crypto.randomUUID()}`));
 
   return {
     freshStub,
-    withDb<T>(label: string, fn: (db: AgentDB) => T): Promise<T> {
+    withDb<R>(label: string, fn: (db: AgentDB) => R): Promise<R> {
       return runInDurableObject(freshStub(label), (instance) =>
         fn(new AgentDB(doStorage(instance), defaults))
       );

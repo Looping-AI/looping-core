@@ -35,7 +35,18 @@ export {
 } from "./vcr-shared.js";
 
 export { FakeSession } from "./fake-session.js";
-export { mockModel, finalReply, type MockStep } from "./mock-model.js";
+// `throwingModel`, `countingModel` and `rateLimitedModel` were reachable only
+// through a deep `dist/` path until now, which meant a consumer could not assert
+// the one thing they exist for: that a rate limit is waited out on the *same*
+// model rather than falling through to the fallback slot.
+export {
+  mockModel,
+  finalReply,
+  throwingModel,
+  countingModel,
+  rateLimitedModel,
+  type MockStep
+} from "./mock-model.js";
 
 export { makeGatewayToken, type GatewayTokenOptions } from "./auth.js";
 export {
