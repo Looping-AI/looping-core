@@ -94,8 +94,13 @@ export abstract class LoopingAgent<
 
   /**
    * This deployment's own public origin, learned from the `jku` every turn
-   * carries. See {@link SelfOrigin} for why it is discovered rather than
-   * configured, and why it is not persisted.
+   * carries and **pinned on the first one** this instance serves.
+   *
+   * Unlike {@link identityKey} this is shared by concurrent turns — the object
+   * is keyed by caller, not by origin — so it is pinned rather than
+   * last-write-wins: an immutable field cannot change under a credential thunk
+   * that reads it while a turn awaits a model call. See {@link SelfOrigin} for
+   * the full argument, and for why nothing is persisted.
    */
   private readonly selfOriginMemo = new SelfOrigin();
 
@@ -324,13 +329,15 @@ export abstract class LoopingAgent<
   }
 
   /**
-   * Record this deployment's own origin from a value that carries it.
+   * Offer this deployment's own origin from a value that carries it. The first
+   * usable one is kept for the life of the instance.
    *
    * Called wherever a {@link TurnPushContext} arrives — here for every agent
    * shape, and at the entry of `RoundAgentBase`'s two RPCs, where the origin is
-   * needed *before* this channel would be built. Idempotent and cheap: an
-   * unusable value is ignored rather than thrown, because a turn must not fail
-   * over this.
+   * needed *before* this channel would be built. All three matter because any of
+   * them can be the call that wakes a fresh isolate. Cheap and unfailing: past
+   * the first turn it is one truthiness check, and an unusable value is ignored
+   * rather than thrown, because a turn must not fail over this.
    */
   protected noteSelfOrigin(url: string | undefined): void {
     this.selfOriginMemo.note(url);
@@ -338,7 +345,8 @@ export abstract class LoopingAgent<
 
   /**
    * This deployment's own public origin, if a turn has carried it to this
-   * instance yet. See {@link SelfOrigin}.
+   * instance yet. Constant once set, so it reads the same from any turn running
+   * on this object. See {@link SelfOrigin}.
    */
   protected selfOrigin(): string | undefined {
     return this.selfOriginMemo.peek();

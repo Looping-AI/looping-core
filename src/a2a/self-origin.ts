@@ -34,42 +34,52 @@
  * so deriving it from the `jku` core already serves makes the agreement
  * structural instead of clerical.
  *
- * ## In memory, deliberately
+ * ## Pinned on the first turn, and in memory
  *
- * Nothing here is persisted, and that is the same call the proxy made. A Worker
- * answers on its custom domain, its `workers.dev` name and every per-version
- * preview URL, so an origin pinned from the first request an isolate happened to
- * see is wrong for every request that arrives on one of the others — and a
- * domain change would outlive the deployment that made it.
+ * The first origin an isolate is told wins, and later ones are ignored. That is
+ * not laziness about staleness — it is what makes the value safe to *read*.
  *
- * Relearning costs nothing: every path that can mint a token is downstream of a
- * call that carries the origin, so an evicted isolate is repopulated before its
- * next model call. It is the same trade as `identityKey` in
- * {@link file://../host/agent.ts LoopingAgent}, for the same reason.
+ * A Durable Object's input gate stays open across a non-storage await, and this
+ * package runs concurrent RPCs into one object by design (`round/workflow.ts`
+ * runs a round's branches under `Promise.all`). Mutable instance state can
+ * therefore change while a turn is awaiting a model call, and the credential
+ * thunks that read this are lazy — they run several frames below the turn, when
+ * the client is built. Pinned, the field is immutable after its first write, so
+ * every concurrent reader in the isolate gets the same string and no turn can
+ * sign as another turn's origin.
+ *
+ * The cost of pinning is what an agent does not have: several identities. An
+ * agent has one endpoint — the one its card advertises, the one a gateway calls
+ * and a verifier allowlists — so there is nothing to follow. Note the asymmetry
+ * with `looping-anthropic-proxy`, which derives its audience per request and
+ * refuses to cache: a *verifier* must accept every hostname it answers on, while
+ * a *signer* needs one stable identity.
+ *
+ * Nothing is persisted, which is what keeps a pin from outliving its truth. An
+ * isolate is fresh on every `wrangler deploy` and recycles on its own, so a moved
+ * deployment re-learns its origin from the next turn it serves.
  */
 export class SelfOrigin {
   private observed?: string;
 
-  /** The raw string {@link observed} was parsed from — see {@link note}. */
-  private lastNoted?: string;
-
   /**
-   * Record the origin of an absolute URL seen on the request path — a `jku`, an
+   * Offer the origin of an absolute URL seen on the request path — a `jku`, an
    * endpoint, or a bare origin. Only `.origin` is kept, so a path or a trailing
    * slash cannot reach a token claim.
    *
-   * Silently ignores anything unusable (absent, relative, or a scheme that has
-   * no meaningful origin). This runs at the top of a turn, where a diagnostic
-   * value must never be the thing that fails it; the throw belongs at
-   * {@link require}, where something actually wanted the value.
+   * **The first usable value wins**; every later call is a no-op, including one
+   * naming a different origin. Called at each RPC entry and again when the push
+   * channel is built, so most calls are already no-ops — but the reason for the
+   * pin is the read side, not the write side. See the note above the class.
    *
-   * Called several times per round with the same `jku` — at each RPC entry and
-   * again when the push channel is built — so an identical string skips the
-   * parse. A string compare, not a pin: a *different* origin still replaces the
-   * one held, which is the whole point of not caching this.
+   * Silently ignores anything unusable (absent, relative, or a scheme that has
+   * no meaningful origin), and an unusable value never pins: the parse comes
+   * first and the field is assigned only on success. This runs at the top of a
+   * turn, where a diagnostic value must never be the thing that fails it; the
+   * throw belongs at {@link require}, where something actually wanted the value.
    */
   note(url: string | undefined): void {
-    if (!url || url === this.lastNoted) return;
+    if (this.observed || !url) return;
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -77,17 +87,16 @@ export class SelfOrigin {
       return;
     }
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
-    this.lastNoted = url;
     this.observed = parsed.origin;
   }
 
-  /** The origin observed so far, or `undefined` when nothing has carried one. */
+  /** The pinned origin, or `undefined` when nothing has carried one yet. */
   peek(): string | undefined {
     return this.observed;
   }
 
   /**
-   * The observed origin, for a caller that cannot proceed without it.
+   * The pinned origin, for a caller that cannot proceed without it.
    *
    * Throws naming the timing, because that is what the mistake always is: the
    * value arrives with a turn, so `onStart`, a constructor and a scheduled

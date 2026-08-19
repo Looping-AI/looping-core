@@ -290,11 +290,16 @@ callback `jku` from `new URL(request.url).origin`, and it rides every turn into 
 and on into each subagent facet. A `SELF_ORIGIN` secret only restates that, and has to
 be kept byte-identical with the verifier's allowlist by hand in every environment.
 
-Nothing is pinned or persisted — a Worker answers on its custom domain, its
-`workers.dev` name and every preview URL, so the value follows the origin the request
-actually arrived on. It is known **inside a turn or a chunk**: `onStart`, a constructor
-and a scheduled callback all run before any request has said what this deployment is
-called, and `requireSelfOrigin()` throws there saying so.
+The first turn an instance serves **pins** it, and nothing is persisted. Pinning is
+what makes it safe to read: turns run concurrently in one Durable Object and a
+credential thunk fires several frames below the turn that set the value, so a mutable
+field could hand one turn another's origin. An agent has one endpoint anyway — the one
+its card advertises and a verifier allowlists — and a fresh isolate on deploy re-learns
+it.
+
+It is known **inside a turn or a chunk**: `onStart`, a constructor and a scheduled
+callback all run before any request has said what this deployment is called, and
+`requireSelfOrigin()` throws there saying so.
 
 ---
 

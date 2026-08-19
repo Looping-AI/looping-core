@@ -630,10 +630,11 @@ export abstract class RoundAgentBase<
     // A facet has no request path of its own: it is reached only from here, so
     // this is the only way it can learn what this deployment is called. Passed
     // as its own argument, never folded into `request`, for the same reason
-    // `chunk` is — the request is fingerprinted, and an origin that legitimately
-    // differs between two chunks of one run must not make a retry look like a
-    // different execution. Undefined only on an instance no turn has reached,
-    // where the facet's own `requireSelfOrigin` produces the readable error.
+    // `chunk` is — the request is fingerprinted, and this is not part of what
+    // the execution *is*, so it must not be able to make a retry look like a
+    // different one. Pinned on both sides, so it cannot change under a run;
+    // undefined only on an instance no turn has reached, where the facet's own
+    // `requireSelfOrigin` produces the readable error.
     const selfOrigin = this.selfOrigin();
     const child = await this.subAgent(this.subagentClass(), name);
     try {

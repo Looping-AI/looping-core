@@ -30,32 +30,35 @@ describe("SelfOrigin", () => {
   });
 
   /**
-   * A Worker answers on its custom domain, its `workers.dev` name and every
-   * preview URL. Nothing is pinned: the last request wins, so an instance that
-   * served both is signing as whichever origin it was actually reached on.
+   * The pin is what makes the value safe to read: turns run concurrently in one
+   * Durable Object, and a credential thunk reads this several frames below the
+   * turn that set it. Immutable after the first write, no turn can sign as
+   * another turn's origin — so a later, different origin is ignored.
    */
-  it("follows the origin of the most recent turn", () => {
+  it("pins the first origin and ignores a later one", () => {
     const origin = new SelfOrigin();
     origin.note(jwksUrl("https://agent.example.com"));
-    origin.note(jwksUrl("https://preview-7.agent.workers.dev"));
+    origin.note(jwksUrl("https://other.agent.workers.dev"));
 
-    expect(origin.peek()).toBe("https://preview-7.agent.workers.dev");
+    expect(origin.peek()).toBe("https://agent.example.com");
   });
 
   /**
-   * `note` runs at the top of a turn, so it must never be the thing that fails
-   * one. An unusable value leaves the last good origin in place rather than
-   * clearing it or throwing.
+   * Unusable first, good second — the order that matters. `note` runs at the top
+   * of a turn and must never fail one, but it must also never let a value it
+   * could not read an origin from occupy the pin, which would be unrecoverable
+   * for the life of the isolate.
    */
-  it("ignores anything it cannot read an origin from", () => {
+  it("does not let an unusable value take the pin", () => {
     const origin = new SelfOrigin();
-    origin.note(jwksUrl(AGENT_ORIGIN));
 
     origin.note(undefined);
     origin.note("");
     origin.note("/.well-known/jwks.json");
     origin.note("data:application/json,{}");
+    expect(origin.peek()).toBeUndefined();
 
+    origin.note(jwksUrl(AGENT_ORIGIN));
     expect(origin.peek()).toBe(AGENT_ORIGIN);
   });
 

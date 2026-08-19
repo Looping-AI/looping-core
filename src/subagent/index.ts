@@ -157,9 +157,10 @@ export abstract class RecipeSubagentBase<
 
   /**
    * This deployment's own public origin, as the parent DO passes it on every
-   * chunk. In memory for the same reason {@link inflight} is: a facet is reached
-   * only through {@link executeChunk}, so an instance that lost it is an instance
-   * that will be told again before it can run anything. See {@link SelfOrigin}.
+   * chunk, pinned from the first. In memory for the same reason {@link inflight}
+   * is: a facet is reached only through {@link executeChunk}, so an instance that
+   * lost it is an instance that will be told again before it can run anything.
+   * See {@link SelfOrigin}.
    */
   private readonly selfOriginMemo = new SelfOrigin();
 
