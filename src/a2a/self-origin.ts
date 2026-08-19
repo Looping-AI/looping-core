@@ -50,6 +50,9 @@
 export class SelfOrigin {
   private observed?: string;
 
+  /** The raw string {@link observed} was parsed from — see {@link note}. */
+  private lastNoted?: string;
+
   /**
    * Record the origin of an absolute URL seen on the request path — a `jku`, an
    * endpoint, or a bare origin. Only `.origin` is kept, so a path or a trailing
@@ -59,9 +62,14 @@ export class SelfOrigin {
    * no meaningful origin). This runs at the top of a turn, where a diagnostic
    * value must never be the thing that fails it; the throw belongs at
    * {@link require}, where something actually wanted the value.
+   *
+   * Called several times per round with the same `jku` — at each RPC entry and
+   * again when the push channel is built — so an identical string skips the
+   * parse. A string compare, not a pin: a *different* origin still replaces the
+   * one held, which is the whole point of not caching this.
    */
   note(url: string | undefined): void {
-    if (!url) return;
+    if (!url || url === this.lastNoted) return;
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -69,6 +77,7 @@ export class SelfOrigin {
       return;
     }
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
+    this.lastNoted = url;
     this.observed = parsed.origin;
   }
 
