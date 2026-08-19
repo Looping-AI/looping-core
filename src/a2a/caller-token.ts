@@ -74,6 +74,12 @@ export async function signCallerToken(
   options: CallerTokenOptions
 ): Promise<string> {
   const { key, kid } = await signingKeyFor(options.signingKey);
+  // Normalized for the same reason `audience` is, and it has to happen before
+  // both uses: `jku` names only the origin, so an `issuer` carrying a trailing
+  // slash or a path would sign an `iss` that disagrees with it — and a verifier
+  // comparing `iss` byte-for-byte against a normalized origin allowlist rejects
+  // the token even though the two URLs share an origin.
+  const issuer = new URL(options.issuer).origin;
   return new SignJWT({
     [IDENTITY_CLAIM]: options.identity,
     [TENANT_CLAIM]: options.tenant
@@ -84,9 +90,9 @@ export async function signCallerToken(
       // Where the far side fetches the public half. A verifier must check this
       // origin against its own allowlist *before* fetching, which is what stops
       // a forged token nominating an attacker-controlled JWKS.
-      jku: jwksUrl(options.issuer)
+      jku: jwksUrl(issuer)
     })
-    .setIssuer(options.issuer)
+    .setIssuer(issuer)
     .setAudience(new URL(options.audience).origin)
     .setIssuedAt()
     .setExpirationTime(`${options.ttlSeconds ?? DEFAULT_TTL_SECONDS}s`)

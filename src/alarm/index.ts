@@ -48,10 +48,28 @@ export class WakeMap {
     this.#storage = storage;
   }
 
+  /**
+   * Every pending intent, as a **null-prototype** dictionary rebuilt from own
+   * entries only.
+   *
+   * {@link WakeIntent.key} is a caller-supplied string, so an ordinary object
+   * literal would let three of them misbehave: `get("toString")` would return an
+   * inherited function rather than `undefined`, `clear("constructor")` would
+   * treat a key it never held as present, and `set` on `"__proto__"` would hit
+   * `Object.prototype`'s setter and change the prototype instead of storing the
+   * intent. With no prototype there is nothing to inherit and nothing to poison,
+   * and every string round-trips as an ordinary key.
+   */
   async all(): Promise<Record<string, WakeIntent>> {
-    return (
-      (await this.#storage.get<Record<string, WakeIntent>>(WAKE_KEY)) ?? {}
-    );
+    const stored =
+      await this.#storage.get<Record<string, WakeIntent>>(WAKE_KEY);
+    const intents = Object.create(null) as Record<string, WakeIntent>;
+    // `Object.entries` is own-enumerable-only, so nothing from a prototype can
+    // enter here even if the stored value arrived with one.
+    if (stored) {
+      for (const [key, intent] of Object.entries(stored)) intents[key] = intent;
+    }
+    return intents;
   }
 
   async get(key: string): Promise<WakeIntent | undefined> {
@@ -67,7 +85,9 @@ export class WakeMap {
 
   async clear(key: string): Promise<void> {
     const all = await this.all();
-    if (!(key in all)) return;
+    // `hasOwn`, not `in`: the dictionary has no prototype today, and this stays
+    // correct if that ever changes.
+    if (!Object.hasOwn(all, key)) return;
     delete all[key];
     await this.#storage.put(WAKE_KEY, all);
     await this.rearm();

@@ -54,6 +54,31 @@ describe("signCallerToken", () => {
     }
   });
 
+  /**
+   * `iss` and `jku` must name the same origin: a verifier compares `iss`
+   * byte-for-byte against a normalized allowlist, so an un-normalized issuer
+   * signs a token that is guaranteed to be rejected.
+   */
+  it("normalizes the issuer, and keeps it in step with jku", async () => {
+    for (const issuer of [
+      "https://agent.example",
+      "https://agent.example/",
+      "https://agent.example/mounted/here"
+    ]) {
+      const token = await signCallerToken({ ...options, issuer });
+      expect(decodeJwt(token).iss).toBe("https://agent.example");
+      expect(decodeProtectedHeader(token).jku).toBe(
+        jwksUrl("https://agent.example")
+      );
+    }
+  });
+
+  it("refuses an issuer that is not an absolute URL", async () => {
+    await expect(
+      signCallerToken({ ...options, issuer: "agent.example" })
+    ).rejects.toThrow();
+  });
+
   it("refuses an audience that is not an absolute URL", async () => {
     await expect(
       signCallerToken({ ...options, audience: "proxy.example.com" })

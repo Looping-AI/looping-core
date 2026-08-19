@@ -134,6 +134,54 @@ describe("WakeMap", () => {
     expect(calls.length).toBe(before);
   });
 
+  /**
+   * `key` is a caller-supplied string, so the three names that mean something to
+   * `Object.prototype` have to behave like any other key.
+   */
+  describe("keys that collide with Object.prototype", () => {
+    it("does not report an inherited member as a stored intent", async () => {
+      const { wake } = fakeStorage();
+
+      expect(await wake.get("toString")).toBeUndefined();
+      expect(await wake.get("constructor")).toBeUndefined();
+      expect(await wake.get("__proto__")).toBeUndefined();
+      expect(await wake.due(Date.now())).toEqual([]);
+    });
+
+    it("stores and returns them like any other key", async () => {
+      const { wake, alarmAt } = fakeStorage();
+      await wake.set(intent("__proto__", 1_000));
+      await wake.set(intent("toString", 2_000));
+
+      expect(await wake.get("__proto__")).toEqual({
+        key: "__proto__",
+        notBefore: 1_000
+      });
+      expect(await wake.get("toString")).toEqual({
+        key: "toString",
+        notBefore: 2_000
+      });
+      // Proof it was stored rather than swallowed by the prototype setter.
+      expect(alarmAt()).toBe(1_000);
+      expect((await wake.due(2_000)).map((i) => i.key)).toEqual([
+        "__proto__",
+        "toString"
+      ]);
+    });
+
+    it("treats clearing an unheld prototype name as a no-op", async () => {
+      const { wake, alarmAt, calls } = fakeStorage();
+      await wake.set(intent("kept", 4_000));
+      const before = calls.length;
+
+      await wake.clear("constructor");
+
+      expect(await wake.get("kept")).toBeDefined();
+      expect(alarmAt()).toBe(4_000);
+      expect(calls.length).toBe(before);
+    });
+  });
+
   describe("repair", () => {
     it("arms a short retry when the handler failed with no alarm left", async () => {
       const { wake, alarmAt } = fakeStorage();
