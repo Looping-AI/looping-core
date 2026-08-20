@@ -229,7 +229,6 @@ not drag in the A2A adapter, and the test harness cannot reach a production bund
 | `@loopingai/core/agent`        | session, history, models + Workers AI, inference, budget, control tools     |
 | `@loopingai/core/host`         | `LoopingAgent` — the Durable Object body — and `PluginHost`                 |
 | `@loopingai/core/round`        | the delegating round loop: `RoundAgentBase`, `runHandleTask`, `runTurn`     |
-| `@loopingai/core/anthropic`    | Claude as a second provider — _optional peer on `@anthropic-ai/sdk`_        |
 | `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool                        |
 | `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
 | `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
@@ -499,7 +498,6 @@ await withDb("accepts a turn once", async (db) => {
 - **Bindings:** `AI`, one Durable Object, one Workflow
 - **Secrets:** `A2A_SIGNING_KEY`, `GATEWAY_ORIGINS`
 - **Peers, never bundled:** `agents`, `ai`, `workers-ai-provider`
-- **Optional peer:** `@anthropic-ai/sdk`, needed only by `@loopingai/core/anthropic`
 
 That last point is not stylistic: two copies of `agents` in one Worker breaks the
 `Session` / `SessionMessage` types and every `instanceof`. For local development

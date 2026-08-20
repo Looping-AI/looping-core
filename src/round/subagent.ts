@@ -70,14 +70,17 @@ export abstract class RecipeSubagentHost<
    * Which provider this facet's chunks run on. Mirrors
    * {@link file://../host/agent.ts LoopingAgent.modelRuntime}, and **must be
    * overridden to match it** — a facet that keeps the Workers AI default while
-   * its parent runs on Claude would silently execute every subtask on a
-   * different model than the round that delegated it.
+   * its parent runs on another provider would silently execute every subtask on
+   * a different model than the round that delegated it.
    *
    * The two seams take the same arguments precisely so that keeping them in step
    * needs no discipline: write the provider once as a
    * {@link file://../agent/model.ts ModelRuntimeFactory} and have both return
-   * it. Two hand-copied `createAnthropicModelRuntime({...})` bodies is what this
-   * shape exists to stop, because nothing type-checks their agreement.
+   * it. Two hand-copied runtime-construction bodies is what this shape exists to
+   * stop, because nothing type-checks their agreement.
+   *
+   * Note the cheapest way to satisfy this is to override *neither* seam, which
+   * is what an agent on core's default does.
    *
    * Takes the model config rather than reading `this.config`, because the facet
    * resolves its config inside `buildRuntime` and this is called from there.

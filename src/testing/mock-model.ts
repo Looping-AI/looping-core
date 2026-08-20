@@ -164,7 +164,7 @@ export function rateLimitedModel(
         if (calls <= failures) {
           throw new APICallError({
             message: "429 Wholesale Rate limited",
-            url: "anthropic:messages:test",
+            url: "mock:chat:test",
             requestBodyValues: {},
             statusCode: 429,
             responseHeaders: { "retry-after": "0" }

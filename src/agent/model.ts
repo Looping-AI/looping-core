@@ -11,11 +11,17 @@ import type { ModelConfig } from "../config.js";
  * more than a `LanguageModel` from `ai`. It never learns which provider produced
  * it.
  *
- * The implementations are siblings under `agent/`, one directory each:
- * {@link file://./workers-ai/index.ts `./workers-ai`} is core's default, and
- * {@link file://./anthropic/index.ts `./anthropic`} is Claude behind an optional
- * peer dependency. A third provider is a third directory exporting one
- * {@link ModelRuntimeFactory}; nothing here has to change to admit it.
+ * Core ships exactly one implementation —
+ * {@link file://./workers-ai/index.ts `./workers-ai`} — as a sibling directory
+ * under `agent/`. A second provider is a second directory exporting one
+ * {@link ModelRuntimeFactory}, and nothing here has to change to admit it;
+ * a consumer can equally supply one from outside the package, which is the
+ * point of the seam.
+ *
+ * There was a `./anthropic` sibling until 0.8.0 — a hand-written Messages API
+ * adapter behind an optional peer dependency. It was removed with the only
+ * deployment that used it. Nothing about this contract changed when it went,
+ * which is the strongest thing that can be said for the contract.
  *
  * Which is why this file has no runtime imports at all. The Workers AI factory
  * used to live in it, and a contract that ships one implementation inline reads
