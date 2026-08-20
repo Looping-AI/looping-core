@@ -270,8 +270,9 @@ performs. A gateway pins the card's `kid` + `jku` on first registration
 
 ### Calling out, and knowing your own origin
 
-The same key proves this agent to services that are not the gateway — an inference
-proxy, another agent. `signCallerToken` mints the short-lived token for that: `iss` is
+The same key proves this agent to services that are not the gateway — another agent,
+or any service that verifies against the published JWKS. `signCallerToken` mints the
+short-lived token for that: `iss` is
 this deployment's origin, `jku` is derived from it, and the audience is normalized to a
 bare origin because the far side compares it byte-for-byte.
 

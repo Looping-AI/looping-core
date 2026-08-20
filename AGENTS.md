@@ -206,11 +206,13 @@ Three rules follow, and they are what keep a third provider cheap:
   is the cheapest way to satisfy this, and what an agent on the default does.
 
 Everything deployment-specific stays out, as everywhere else here: which gateway
-path, which credential, and which intermediary a `401` came from are all the
-agent's to supply, from its own `ModelRuntime`. Core recognised one particular
-proxy's error body once; that is the shape of mistake this section exists to
-prevent. `ModelConfig` carried an `aiGatewayProvider` field for the same reason
-and lost it in 0.8.0, once nothing in core read it.
+path, which credential, and how to classify a `401` are the agent's to supply,
+from its own `ModelRuntime`. Core recognised one particular intermediary's error
+body once; that is the shape of mistake this section exists to prevent. Two
+things went in 0.8.0 for the same reason, once the deployment that needed them
+was gone: `ModelConfig.aiGatewayProvider`, which core never read, and the
+`"proxy"` arm of `CredentialRejectedBy`, which no provider core ships could
+raise.
 
 ---
 

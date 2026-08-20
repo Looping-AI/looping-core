@@ -94,18 +94,17 @@ export function isTransientAiError(err: unknown): boolean {
  * - `gateway-credential` — the gateway *in front of* the provider rejected the
  *   request, which the provider therefore never saw. Rotate the gateway's token
  *   instead; the model credential is very likely fine.
- * - `proxy-credential` — an intermediary between the gateway and the provider
- *   rejected the caller. Notably **not** a token to rotate: the credential it
- *   refused is minted per request, so the fault is upstream of the secret —
- *   configuration drift, a rotated signing key, or clock skew.
  * - `unknown-credential` — a `401`/`403` matching none of the shapes. Says so,
  *   rather than picking one and sending an operator to rotate a working secret.
+ *
+ * A fourth, `proxy-credential`, was removed in 0.8.0 along with
+ * {@link file://./errors.ts CredentialRejectedBy}'s `"proxy"` arm. Adding a kind
+ * back is a breaking change for every consumer, because the `Record` they map it
+ * with is total — which is the property that makes a new kind impossible to
+ * ignore, and the reason to remove one rather than leave it unreachable.
  */
 export type NonRecoverableKind =
-  | "credential"
-  | "gateway-credential"
-  | "proxy-credential"
-  | "unknown-credential";
+  "credential" | "gateway-credential" | "unknown-credential";
 
 /**
  * Why a round ended with no answer — one terminal status, two situations.
@@ -150,8 +149,6 @@ export function nonRecoverableKind(
       return "credential";
     case "gateway":
       return "gateway-credential";
-    case "proxy":
-      return "proxy-credential";
     // Includes an error that crossed a realm boundary carrying no `source` at
     // all: `isInstance` is structural, so that is reachable, and "unknown" is
     // the honest reading of it.

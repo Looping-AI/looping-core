@@ -12,7 +12,7 @@ import { AGENT_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "../testing/fixtures.js";
 const options = {
   signingKey: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
   issuer: AGENT_ORIGIN,
-  audience: "https://proxy.example.com",
+  audience: "https://service.example.com",
   identity: { key: "looping:coder:x", name: "Coder", kind: "agent" },
   tenant: "coder"
 };
@@ -45,12 +45,12 @@ describe("signCallerToken", () => {
    */
   it("normalizes the audience to a bare origin", async () => {
     for (const audience of [
-      "https://proxy.example.com",
-      "https://proxy.example.com/",
-      "https://proxy.example.com/v1/messages?x=1"
+      "https://service.example.com",
+      "https://service.example.com/",
+      "https://service.example.com/v1/messages?x=1"
     ]) {
       const claims = decodeJwt(await signCallerToken({ ...options, audience }));
-      expect(claims.aud).toBe("https://proxy.example.com");
+      expect(claims.aud).toBe("https://service.example.com");
     }
   });
 
@@ -81,7 +81,7 @@ describe("signCallerToken", () => {
 
   it("refuses an audience that is not an absolute URL", async () => {
     await expect(
-      signCallerToken({ ...options, audience: "proxy.example.com" })
+      signCallerToken({ ...options, audience: "service.example.com" })
     ).rejects.toThrow();
   });
 
