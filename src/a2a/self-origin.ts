@@ -15,10 +15,10 @@
  * The obvious answer is a `SELF_ORIGIN` secret, and it is the wrong one. It
  * restates a value the request already carries, and it has to be kept
  * byte-identical by hand with the origin allowlist on the far side, in every
- * environment, forever. Both siblings that tried it took it back out:
- * `looping-anthropic-proxy` deleted `PROXY_AUDIENCE` in favour of `url.origin`,
- * and `looping-gateway` discovers its own origin from the first
- * signature-verified request rather than being told.
+ * environment, forever. Every sibling that tried it took it back out —
+ * `looping-gateway` discovers its own origin from the first signature-verified
+ * request rather than being told, and a verifying Worker that once carried a
+ * configured audience replaced it with `url.origin`.
  *
  * ## Where the value comes from
  *
@@ -51,9 +51,9 @@
  * The cost of pinning is what an agent does not have: several identities. An
  * agent has one endpoint — the one its card advertises, the one a gateway calls
  * and a verifier allowlists — so there is nothing to follow. Note the asymmetry
- * with `looping-anthropic-proxy`, which derives its audience per request and
- * refuses to cache: a *verifier* must accept every hostname it answers on, while
- * a *signer* needs one stable identity.
+ * with a *verifier*, which derives the audience it expects per request and must
+ * not cache it: a verifier has to accept every hostname it answers on, while a
+ * signer needs one stable identity.
  *
  * Nothing is persisted, which is what keeps a pin from outliving its truth. An
  * isolate is fresh on every `wrangler deploy` and recycles on its own, so a moved

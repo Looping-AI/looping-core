@@ -52,21 +52,6 @@ export interface ModelConfig {
   /** AI Gateway slug; `"default"` auto-provisions on first request. */
   aiGatewayId: string;
   /**
-   * The segment after the gateway slug in `.../{gateway}/{provider}` — either a
-   * provider-native path like `"anthropic"` or a
-   * [custom provider](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/)
-   * slug. Core never reads it; a `ModelRuntime` that builds its own base URL
-   * does.
-   *
-   * Config rather than a literal at that call site because the parent agent and
-   * its subagent facet resolve their config independently, and a value that
-   * drifts between them routes delegated subtasks through a different provider
-   * than the round that delegated them — silently, since both satisfy
-   * `ModelRuntime`. Which path to pick, and why, belongs with the agent that
-   * picks it.
-   */
-  aiGatewayProvider: string;
-  /**
    * Output-token ceiling for every chat call. Left unset, the binding applies a
    * per-model default which a reasoning model spends on `reasoning_content`
    * before emitting the tool call — a truncated round that reads as a clean
@@ -95,9 +80,9 @@ export interface ModelConfig {
    * The AI SDK does the waiting, and it does it properly:
    * `retryWithExponentialBackoffRespectingRetryHeaders` honours `retry-after-ms`
    * and `retry-after` and falls back to exponential backoff. It only fires for
-   * an `APICallError` carrying `isRetryable`, which is why
-   * {@link file://./agent/anthropic/language-model.ts} maps provider errors into
-   * that shape rather than rethrowing them raw.
+   * an `APICallError` carrying `isRetryable`, so a provider written outside core
+   * has to map its errors into that shape rather than rethrowing them raw, or
+   * none of this fires for it.
    *
    * Bounded at 4 by `resolveConfig`. The retries happen *inside*
    * `step.do("turn:<round>")`, and the SDK caps a single honoured `retry-after`
@@ -226,10 +211,6 @@ export const DEFAULT_CORE_CONFIG: CoreConfigBaseline = {
     // Not a model: an AI Gateway slug, and `"default"` is Cloudflare's own
     // auto-provision behaviour rather than a choice core is making for anyone.
     aiGatewayId: "default",
-    // The provider-native Anthropic endpoint, which is what a deployment with
-    // no custom provider registered has. Agents that must own the credential
-    // themselves override this with their `custom-*` slug.
-    aiGatewayProvider: "anthropic",
     maxOutputTokens: 16_384,
     reasoningEffort: "medium",
     // Two, which is the AI SDK's own default and enough to ride out the kind of

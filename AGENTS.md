@@ -72,12 +72,15 @@ follow from that, and all four have already been violated once:
 - **Never import a package this one does not declare.** npm hoists a transitive
   dependency into a flat `node_modules`, so an undeclared import resolves here
   and nowhere stricter — pnpm and Yarn PnP both refuse it, and so does npm the
-  moment the intermediate package restructures. `@ai-sdk/provider` reached
-  `/testing` this way (through `ai`'s copy) and `@typescript-eslint/utils`
-  reached `/eslint` (through `typescript-eslint`). Prefer the re-export from a
-  package already declared — `ai` re-exports `APICallError` — and where the
-  import is genuinely needed, declare it as an **optional peer**, like
-  `@anthropic-ai/sdk`. `verify:exports` now fails on this.
+  moment the intermediate package restructures. Two imports once reached a
+  published subpath this way: `@ai-sdk/provider` into `/testing` (through `ai`'s
+  copy) and `@typescript-eslint/utils` into `/eslint` (through
+  `typescript-eslint`). Both were fixed, and between them they show the two
+  remedies available. Prefer the re-export from a package already declared —
+  `APICallError` comes from `ai` now, which is why `@ai-sdk/provider` is not a
+  dependency here at all any more — and where the import is genuinely needed,
+  declare it as an **optional peer**, as `/eslint` does. `verify:exports` fails
+  on this.
 
 Adding an export subpath means adding it to `package.json`'s `exports` **and**
 confirming it emits: a subpath that resolves to a missing file is invisible until
@@ -194,20 +197,25 @@ Three rules follow, and they are what keep a third provider cheap:
   fallback-skipping treatment with nothing in core to change.
 - **A subpath only when the peer is optional.** `workers-ai` has none because
   `workers-ai-provider` is a required peer and every consumer's graph holds it
-  already; `/anthropic` has one because `@anthropic-ai/sdk` is optional and an
-  agent on Workers AI must not pay for a provider it never calls. **No runtime
-  subpath may import `/anthropic`.**
+  already. A provider behind an _optional_ peer gets its own subpath instead, so
+  an agent never calling it does not pay for it — and **no runtime subpath may
+  import such a subpath.** `/anthropic` was the one worked example until 0.8.0,
+  when it was removed with the only deployment that used it.
 - **`LoopingAgent.modelRuntime` and `RecipeSubagentHost.modelRuntime` are
   overridden together.** They take identical arguments so one factory can serve
-  both. A facet left on the default while its parent runs on Claude executes
+  both. A facet left on the default while its parent runs elsewhere executes
   every delegated subtask on a different model than the round that delegated it,
-  and does so silently, because both satisfy `ModelRuntime`.
+  and does so silently, because both satisfy `ModelRuntime`. Overriding neither
+  is the cheapest way to satisfy this, and what an agent on the default does.
 
 Everything deployment-specific stays out, as everywhere else here: which gateway
-path (`ModelConfig.aiGatewayProvider`), which credential, and which intermediary
-a `401` came from (`AnthropicModelDeps.classifyAuthFailure`) are all supplied by
-the agent. Core recognised one particular proxy's error body once; that is the
-shape of mistake this section exists to prevent.
+path, which credential, and how to classify a `401` are the agent's to supply,
+from its own `ModelRuntime`. Core recognised one particular intermediary's error
+body once; that is the shape of mistake this section exists to prevent. Two
+things went in 0.8.0 for the same reason, once the deployment that needed them
+was gone: `ModelConfig.aiGatewayProvider`, which core never read, and the
+`"proxy"` arm of `CredentialRejectedBy`, which no provider core ships could
+raise.
 
 ---
 

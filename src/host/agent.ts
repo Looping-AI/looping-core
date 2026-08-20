@@ -172,12 +172,11 @@ export abstract class LoopingAgent<
    * a trap that only shows up as a performance bug. This is called once.
    *
    * `ModelRuntime` is the whole contract: return anything satisfying it and
-   * every loop in core keeps working unchanged. Core ships two implementations,
-   * one directory each — {@link file://../agent/workers-ai/index.ts
-   * `agent/workers-ai`} (the default below) and `@loopingai/core/anthropic` —
-   * and a third provider is a third directory exporting one
-   * {@link file://../agent/model.ts ModelRuntimeFactory}, not a change to
-   * anything on this path.
+   * every loop in core keeps working unchanged. Core ships one implementation,
+   * {@link file://../agent/workers-ai/index.ts `agent/workers-ai`} (the default
+   * below); a second provider is one more
+   * {@link file://../agent/model.ts ModelRuntimeFactory}, defined here or in the
+   * consumer, not a change to anything on this path.
    *
    * Takes the resolved {@link ModelConfig} rather than reading `this.config`, so
    * that this signature matches

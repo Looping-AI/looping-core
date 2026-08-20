@@ -207,9 +207,11 @@ for (const [subpath, target] of subpathEntries) {
  * Both graphs are walked, and the `.d.ts` one is not optional. A **type-only**
  * import is erased from the emitted `.js` and survives only in the declarations,
  * so scanning the runtime graph alone would report "every import declared" while
- * an undeclared package still breaks a pnpm or Yarn PnP consumer's `tsc`. That is
- * the half of this package's own `@ai-sdk/provider` usage that remains after the
- * value import moved to `ai`.
+ * an undeclared package still breaks a pnpm or Yarn PnP consumer's `tsc`. That
+ * was how the type-only half of the `@ai-sdk/provider` usage surfaced once the
+ * value import had moved to `ai`. Both halves are gone now — the package is not
+ * a dependency here at all — but the declaration walk is why the second one
+ * could not hide.
  *
  * `node:*` and `cloudflare:*` are excluded because check 5 already governs who
  * may reach them, and subpath imports (`ai/test`, `agents/experimental/...`) are

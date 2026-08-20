@@ -75,9 +75,10 @@ export function makeDelegateTool(
  * why it took a Claude-backed agent to surface it.
  *
  * Nothing persists this: both halves of the pair are rebuilt together on every
- * request, so changing the shape needs no migration. See
- * {@link file://../agent/anthropic/prompt.ts providerSafeToolCallId} for the
- * backstop that catches the next one of these.
+ * request, so changing the shape needs no migration. There is no longer a
+ * provider-side backstop in core — the adapter that carried one went with
+ * `./anthropic` in 0.8.0 — so a provider added here that validates tool-call ids
+ * needs to sanitize them on its own way out.
  */
 export function delegateToolCallId(taskId: string, round: number): string {
   return `task_${taskId}_round_${round}_delegate`;

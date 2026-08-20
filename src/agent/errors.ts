@@ -6,7 +6,7 @@
  * any particular one exists. `nonRecoverableKind` in
  * {@link file://./inference.ts inference.ts} keys on this file, so a provider
  * written outside core — the thing `ModelRuntimeFactory` exists to make cheap —
- * gets the same handling as `agent/anthropic` with no change to core.
+ * gets the same handling as core's own, with no change to core.
  *
  * ## Why a third classification was needed at all
  *
@@ -25,26 +25,26 @@
 /**
  * Who refused the request, when a `401` came back.
  *
- * There can be up to three authorities on the path, each with its own
- * credential: the AI Gateway (`cf-aig-authorization`), an optional intermediary
- * a deployment puts between the gateway and the provider (`"proxy"`), and the
- * model provider itself (`Authorization`). They fail with the same status code
- * and completely different remedies, so a rejection that does not say which one
- * it was sends an operator to rotate the wrong secret — which is exactly what
- * happened before this existed.
- *
- * `"proxy"` is the odd one out: it is generally *not* a secret to rotate. An
- * intermediary that mints its caller credential per request fails for reasons
- * upstream of any stored secret — configuration drift, a rotated signing key,
- * clock skew — so the remedy is to look, not to rotate. Core recognises no
- * particular intermediary; a deployment that has one supplies its own classifier
- * (see `AnthropicModelDeps.classifyAuthFailure`).
+ * Two authorities sit on the path, each with its own credential: the AI Gateway
+ * (`cf-aig-authorization`) and the model provider itself (`Authorization`). They
+ * fail with the same status code and have completely different remedies, so a
+ * rejection that does not say which one it was sends an operator to rotate the
+ * wrong secret — which is exactly what happened before this existed.
  *
  * `"unknown"` is a real answer and the default. Guessing `"provider"` for an
  * unrecognised body is how the misdiagnosis happens; saying "one of these, here
  * is how to check each" is worse copy and better information.
+ *
+ * A third arm, `"proxy"`, named an optional intermediary between the two — the
+ * shape where a deployment terminates the gateway's request at its own Worker to
+ * attach a credential. It was removed in 0.8.0 with the deployment that had one.
+ * If you build that topology again, the honest classification for its refusals
+ * is `"unknown"` until you widen this union, because the remedy genuinely
+ * differs: an intermediary minting its caller credential per request fails for
+ * reasons upstream of any stored secret, so the fix is to look rather than to
+ * rotate.
  */
-export type CredentialRejectedBy = "provider" | "gateway" | "proxy" | "unknown";
+export type CredentialRejectedBy = "provider" | "gateway" | "unknown";
 
 /**
  * A credential on the path to the model was rejected (HTTP 401 / 403).
