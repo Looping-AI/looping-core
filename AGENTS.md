@@ -72,12 +72,15 @@ follow from that, and all four have already been violated once:
 - **Never import a package this one does not declare.** npm hoists a transitive
   dependency into a flat `node_modules`, so an undeclared import resolves here
   and nowhere stricter — pnpm and Yarn PnP both refuse it, and so does npm the
-  moment the intermediate package restructures. `@ai-sdk/provider` reached
-  `/testing` this way (through `ai`'s copy) and `@typescript-eslint/utils`
-  reached `/eslint` (through `typescript-eslint`). Prefer the re-export from a
-  package already declared — `ai` re-exports `APICallError` — and where the
-  import is genuinely needed, declare it as an **optional peer**.
-  `verify:exports` now fails on this.
+  moment the intermediate package restructures. Two imports once reached a
+  published subpath this way: `@ai-sdk/provider` into `/testing` (through `ai`'s
+  copy) and `@typescript-eslint/utils` into `/eslint` (through
+  `typescript-eslint`). Both were fixed, and between them they show the two
+  remedies available. Prefer the re-export from a package already declared —
+  `APICallError` comes from `ai` now, which is why `@ai-sdk/provider` is not a
+  dependency here at all any more — and where the import is genuinely needed,
+  declare it as an **optional peer**, as `/eslint` does. `verify:exports` fails
+  on this.
 
 Adding an export subpath means adding it to `package.json`'s `exports` **and**
 confirming it emits: a subpath that resolves to a missing file is invisible until

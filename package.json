@@ -138,8 +138,6 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^4.0.0",
-    "@anthropic-ai/sdk": "^0.116.0",
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^26.1.1",
     "agents": "^0.20.0",
