@@ -72,7 +72,13 @@ describe("key derivation", () => {
 describe("arm", () => {
   it("writes running before anything runs, and arms the run intent", async () => {
     const { job, wake } = lifecycle();
-    await job.write({ state: "done", command: "npm ci", exitCode: 0, finishedAt: 1, ms: 1 });
+    await job.write({
+      state: "done",
+      command: "npm ci",
+      exitCode: 0,
+      finishedAt: 1,
+      ms: 1
+    });
 
     const armedAt = await job.arm({ command: "npm ci" });
     expect(armedAt).toBeTypeOf("number");
@@ -87,7 +93,12 @@ describe("arm", () => {
 
   it("is self-limiting: a second call sees running and declines", async () => {
     const { job } = lifecycle();
-    await job.write({ state: "failed", command: "npm ci", finishedAt: 1, error: "x" });
+    await job.write({
+      state: "failed",
+      command: "npm ci",
+      finishedAt: 1,
+      error: "x"
+    });
     expect(await job.arm({ command: "npm ci" })).toBeTypeOf("number");
     expect(await job.arm({ command: "npm ci" })).toBeUndefined();
   });
@@ -96,7 +107,12 @@ describe("arm", () => {
     // Arming used to require `done`, so one bad run left a record that declined
     // to re-arm forever — one failure poisoning every task after it.
     const { job } = lifecycle();
-    await job.write({ state: "failed", command: "npm ci", finishedAt: 1, error: "x" });
+    await job.write({
+      state: "failed",
+      command: "npm ci",
+      finishedAt: 1,
+      error: "x"
+    });
     expect(await job.arm({ command: "npm ci" })).toBeTypeOf("number");
   });
 
@@ -109,11 +125,21 @@ describe("arm", () => {
 
   it("honours the cooldown floor between attempts", async () => {
     const { job, storage } = lifecycle();
-    await job.write({ state: "failed", command: "npm ci", finishedAt: 1, error: "x" });
+    await job.write({
+      state: "failed",
+      command: "npm ci",
+      finishedAt: 1,
+      error: "x"
+    });
     expect(await job.arm({ command: "npm ci" })).toBeTypeOf("number");
 
     // Back to a re-armable state, but still inside the cooldown window.
-    await job.write({ state: "failed", command: "npm ci", finishedAt: 2, error: "y" });
+    await job.write({
+      state: "failed",
+      command: "npm ci",
+      finishedAt: 2,
+      error: "y"
+    });
     expect(await job.arm({ command: "npm ci" })).toBeUndefined();
 
     // Age the cooldown marker past the floor.
@@ -152,7 +178,13 @@ describe("claim", () => {
     const { job } = lifecycle();
     expect(job.claim({ state: "idle" }).ok).toBe(true);
     expect(
-      job.claim({ state: "done", command: "npm ci", exitCode: 0, finishedAt: 1, ms: 1 }).ok
+      job.claim({
+        state: "done",
+        command: "npm ci",
+        exitCode: 0,
+        finishedAt: 1,
+        ms: 1
+      }).ok
     ).toBe(true);
   });
 });
@@ -160,7 +192,11 @@ describe("claim", () => {
 describe("staleness", () => {
   it("outlasts a job that is merely slow", () => {
     const { job } = lifecycle();
-    const state = { state: "running" as const, command: "npm ci", startedAt: 0 };
+    const state = {
+      state: "running" as const,
+      command: "npm ci",
+      startedAt: 0
+    };
     // timeout 60s + default 5min stale bound: still live at 5 minutes.
     expect(job.isStale(state, 60_000, 5 * 60_000)).toBe(false);
     expect(job.isStale(state, 60_000, 6 * 60_000 + 1)).toBe(true);

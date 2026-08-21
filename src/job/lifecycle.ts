@@ -1,9 +1,5 @@
 import { WakeMap } from "../alarm/index.js";
-import {
-  isRearmable,
-  type JobState,
-  type RunningJob
-} from "./state.js";
+import { isRearmable, type JobState, type RunningJob } from "./state.js";
 
 /**
  * The choreography around a long job a Durable Object owns through its alarm.
