@@ -33,7 +33,7 @@
  *   deliberate no-op as a failure to retry, and an arming path must not re-drive
  *   it forever.
  * - `running` — in flight, or believed to be. Never trusted without the
- *   staleness bound in {@link JobLifecycle.status}, because the isolate that
+ *   staleness bound in {@link JobLifecycle.claim}, because the isolate that
  *   wrote it may be long gone.
  * - `done` / `failed` — terminal, carrying enough to explain the outcome without
  *   the caller reaching for the transcript.

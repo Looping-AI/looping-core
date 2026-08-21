@@ -1,4 +1,4 @@
-import { WakeMap } from "../alarm/index.js";
+import type { WakeMap } from "../alarm/index.js";
 import { isRearmable, type JobState, type RunningJob } from "./state.js";
 
 /**
@@ -84,6 +84,18 @@ export interface JobLifecycleOptions {
   armCooldownMs?: number;
 }
 
+/**
+ * `WakeMap`'s own storage row, spelled here rather than imported.
+ *
+ * Importing `WAKE_KEY` would be a *value* import from `../alarm`, and this
+ * module is careful to reach that package only for types — a runtime edge would
+ * pull the whole alarm module into any bundle that imports `/job`. So the string
+ * is duplicated, and `lifecycle.spec.ts` asserts it still equals `WAKE_KEY`;
+ * specs never ship, so the check costs nothing at runtime and fails loudly if
+ * the two ever drift.
+ */
+const WAKE_MAP_KEY = "wake";
+
 const DEFAULT_STALE_MS = 5 * 60_000;
 const DEFAULT_WATCH_MS = 60_000;
 const DEFAULT_ARM_COOLDOWN_MS = 5 * 60_000;
@@ -109,6 +121,27 @@ export class JobLifecycle<
   readonly watchIntent: string;
 
   constructor(options: JobLifecycleOptions) {
+    /**
+     * An id is a storage key, so a bad one is not a bad name — it is a write
+     * landing on somebody else's row.
+     *
+     * `"wake"` is the one that matters and the reason this guard exists: it is
+     * `WakeMap`'s single row, so a job with that id would overwrite the whole
+     * intent map on its first state write, and the `wake.set()` immediately
+     * after would then read job fields as intents. Every pending wake-up on the
+     * object — not just this job's — silently stops happening.
+     *
+     * Empty is rejected for the same reason one level down: it yields the
+     * intents `-run` and `-watch`, which two differently-broken callers would
+     * share.
+     */
+    if (!options.id) throw new Error("a job id must be a non-empty string");
+    if (options.id === WAKE_MAP_KEY) {
+      throw new Error(
+        `"${WAKE_MAP_KEY}" is reserved: it is WakeMap's storage row, and a job ` +
+          `with that id would overwrite every pending intent on this object`
+      );
+    }
     this.#o = {
       ...options,
       staleMs: options.staleMs ?? DEFAULT_STALE_MS,
@@ -185,8 +218,28 @@ export class JobLifecycle<
       startedAt: armedAt
     } as JobState<TExtra>);
     await this.#o.storage.put(this.armedKey, armedAt);
+    // Kept even if the scheduling below fails, deliberately: a floor that only
+    // applied to *successful* arming would let a persistently failing schedule
+    // re-arm on every call into the object, which is what it exists to prevent.
     await this.#o.storage.put(this.lastArmedKey, armedAt);
-    await this.#o.wake.set({ key: this.runIntent, notBefore: armedAt });
+
+    /**
+     * The placeholder and the alarm that owns it are two writes, and between
+     * them is the one window where this can strand a job: a `running` record no
+     * run intent points at, which every later {@link arm} then declines to
+     * replace *because* it is running.
+     *
+     * The staleness bound in {@link claim} would eventually free it, but only
+     * after a full timeout — so unwind instead, and leave the record exactly as
+     * re-armable as it was found.
+     */
+    try {
+      await this.#o.wake.set({ key: this.runIntent, notBefore: armedAt });
+    } catch (err) {
+      await this.write(state);
+      await this.#o.storage.delete(this.armedKey).catch(() => {});
+      throw err;
+    }
     return armedAt;
   }
 
@@ -212,20 +265,24 @@ export class JobLifecycle<
    * callers spawning under one exec id in fifty seconds, each displacing the
    * last, every displaced drain still attached and still writing verdicts.
    *
-   * Takes the already-repaired state rather than reading it, so the caller
-   * cannot accidentally bypass the staleness bound by passing a raw read.
+   * Applies the staleness bound **itself**, rather than trusting the caller to
+   * have repaired the record first. An earlier draft took an
+   * "already-repaired" state and said so in prose, which enforced nothing: the
+   * repaired and raw types are identical, so a caller passing a raw read got a
+   * `running` record that could never be claimed and a job wedged forever.
+   * `timeoutMs` is the job's own budget; see {@link isStale}.
    */
   claim(
-    repaired: JobState<TExtra>,
+    state: JobState<TExtra>,
+    timeoutMs: number,
     takeOverArmedAt?: number
-  ): { ok: true } | { ok: false; current: JobState<TExtra> } {
-    if (
-      repaired.state === "running" &&
-      repaired.startedAt !== takeOverArmedAt
-    ) {
-      return { ok: false, current: repaired };
-    }
-    return { ok: true };
+  ): { ok: true } | { ok: false; current: RunningJob<TExtra> } {
+    if (state.state !== "running") return { ok: true };
+    // The alarm presenting its own placeholder — the one narrow exemption.
+    if (state.startedAt === takeOverArmedAt) return { ok: true };
+    // A record whose isolate is gone must not block every later run.
+    if (this.isStale(state, timeoutMs)) return { ok: true };
+    return { ok: false, current: state };
   }
 
   // --- staleness and re-attach -------------------------------------------------
@@ -280,6 +337,12 @@ export class JobLifecycle<
     let superseded = false;
     return {
       stillMine: async (): Promise<boolean> => {
+        // The latch is checked *before* the read, not after. Ownership is not
+        // recoverable: once another run has owned this record, a stamp that
+        // happens to match again does not hand it back, and a drain that
+        // regained write access here would be the corruption the marker exists
+        // to prevent.
+        if (superseded) return false;
         const now = await this.context();
         if (now?.startedAt === startedAt) return true;
         superseded = true;
