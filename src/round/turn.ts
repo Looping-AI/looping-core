@@ -164,8 +164,9 @@ function byRound(
  * than carried, from the durable rows that are the record of what happened.
  *
  * Failed and skipped branches are included so the model can disclose them rather
- * than quietly answering as if the work had been done; their diagnostics are not
- * (see `delegateCallOutput`).
+ * than quietly answering as if the work had been done — and, since a failed
+ * branch carries its reason in `output`, so it can tell a wall it should stop
+ * at from a hiccup worth retrying (see `delegateCallOutput`).
  */
 function delegationPair(
   taskId: string,

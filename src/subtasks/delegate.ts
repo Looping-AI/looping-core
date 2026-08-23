@@ -85,12 +85,29 @@ export function delegateToolCallId(taskId: string, round: number): string {
 }
 
 /**
- * One branch's outcome, as the tool result carries it. `output` is null for any
- * branch that did not complete.
+ * One branch's outcome, as the tool result carries it. `output` carries the
+ * branch's report when it completed and its failure reason when it did not.
  *
- * There is no `error` field, and that is deliberate: internal diagnostics never
- * reach the model. It discloses *that* something failed, in user-safe words; the
- * durable row keeps the detail.
+ * **A failed branch says why, and that is a reversal worth explaining.** This
+ * used to be `null` for anything that did not complete, on the principle that
+ * internal diagnostics never reach the model. The principle was right about
+ * *diagnostics* and wrong about this field: what a facet writes into `error` is
+ * not a stack trace, it is a sentence addressed to the delegating model —
+ * "there is no checkout in this workspace yet… clone the repository before
+ * delegating", "every credential has reached its limit; send this request again
+ * after that". Withholding those left the parent with `status: "failed"` and
+ * nothing else, and a parent that cannot tell a transient failure from a
+ * permanent one retries. In the run that prompted this it retried twelve times
+ * over nine minutes, then apologised to the user for a wall it was never shown.
+ *
+ * What replaces the old rule is a constraint on the writer rather than a filter
+ * here: **an `error` is model-visible, so a facet must write it in words that
+ * are safe for one to read and act on.** Bounded by {@link MAX_OUTPUT_CHARS} on
+ * the way through, because a facet that ignores that is a context-window
+ * problem rather than a disclosure one.
+ *
+ * Still one field, not two. The model's question is "what came back from this
+ * branch", and `status` already says which kind of answer it is getting.
  *
  * A type alias, not an interface: this is serialized as the tool result's
  * `JSONValue`, and only aliases get the implicit index signature that satisfies.
@@ -101,6 +118,22 @@ export type DelegateSubtaskOutcome = {
   status: SubtaskStatus;
   output: string | null;
 };
+
+/**
+ * Ceiling on one branch's `output`, applied to both halves of it.
+ *
+ * A round's history holds every branch of every earlier round, so this is
+ * multiplied by the whole delegation history rather than paid once. Generous
+ * enough for a report a subagent meant to be read, far short of a build log a
+ * failing one dumped into `error`.
+ */
+const MAX_OUTPUT_CHARS = 8_000;
+
+function bounded(text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  const suffix = "\n…[truncated]";
+  return `${text.slice(0, MAX_OUTPUT_CHARS - suffix.length)}${suffix}`;
+}
 
 /**
  * Rebuild one round's call input from its durable rows, in stable ordinal order.
@@ -133,7 +166,13 @@ export function delegateCallInput(
   };
 }
 
-/** Rebuild one round's call result from its durable rows, in stable ordinal order. */
+/**
+ * Rebuild one round's call result from its durable rows, in stable ordinal order.
+ *
+ * A completed branch reports its parts; any other branch reports its `error`, or
+ * `null` when it has none to give — a cancelled branch usually does not, and
+ * inventing a sentence for it would be worse than the absence.
+ */
 export function delegateCallOutput(
   branches: CompositionBranch[]
 ): DelegateSubtaskOutcome[] {
@@ -143,7 +182,11 @@ export function delegateCallOutput(
     status: branch.status,
     output:
       branch.status === "completed"
-        ? (branch.resultParts ?? []).map((part) => part.text).join("\n")
-        : null
+        ? bounded(
+            (branch.resultParts ?? []).map((part) => part.text).join("\n")
+          )
+        : branch.error
+          ? bounded(branch.error)
+          : null
   }));
 }
