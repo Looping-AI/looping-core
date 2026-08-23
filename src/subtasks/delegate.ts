@@ -131,7 +131,8 @@ const MAX_OUTPUT_CHARS = 8_000;
 
 function bounded(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
-  return `${text.slice(0, MAX_OUTPUT_CHARS)}\n…[truncated ${text.length - MAX_OUTPUT_CHARS} chars]`;
+  const suffix = "\n…[truncated]";
+  return `${text.slice(0, MAX_OUTPUT_CHARS - suffix.length)}${suffix}`;
 }
 
 /**
