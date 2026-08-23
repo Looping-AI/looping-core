@@ -64,6 +64,7 @@ export {
 export {
   deliverTerminalTask,
   deliverAbandonedTask,
+  TaskAlreadyTerminalError,
   type DeliverTerminalOptions,
   type AbandonedTaskOptions
 } from "./deliver.js";

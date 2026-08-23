@@ -48,6 +48,32 @@ export interface DeliverTerminalOptions {
 }
 
 /**
+ * Thrown when a delivery failed *after* its terminal Task was durably saved.
+ *
+ * The distinction it carries is the difference between "this turn produced
+ * nothing" and "this turn produced a result the gateway has not heard about
+ * yet", and only the first of those is an abandoned task.
+ *
+ * Without it, an ordinary delivery whose `notify` step exhausted its retries
+ * would unwind into an abandoned-task recovery, which would write a generic
+ * failure over a real answer. The guarded write refuses that now
+ * ({@link file://../db/models/tasks.ts}), but refusing it is not enough on its
+ * own: the recovery would then succeed at doing nothing, swallow a genuine
+ * callback failure, and log the word "abandoned" about a turn that completed.
+ * So the two work together — this stops the recovery being attempted, and the
+ * guard is the backstop for the narrow window where a `complete` step throws
+ * without saying whether its write applied.
+ */
+export class TaskAlreadyTerminalError extends Error {
+  constructor(cause: unknown) {
+    super("the terminal Task was saved; the callback after it failed", {
+      cause
+    });
+    this.name = "TaskAlreadyTerminalError";
+  }
+}
+
+/**
  * Persist a turn's terminal Task, then notify the gateway.
  *
  * **The guarded write is the cancellation check.** `saveTask` refuses to write a
@@ -95,9 +121,17 @@ export async function deliverTerminalTask(
   // terminal messageId is deterministic and the gateway is idempotent and
   // single-use, so retries are safe. If it ultimately fails, the gateway's own
   // reaction backstop clears the pending marker.
-  await step.do(`${at}notify`, async () => {
-    await createPushChannel(options.signingKey, options.push).deliver(task);
-  });
+  //
+  // Wrapped, because by this line the Task is durably terminal: anything that
+  // fails from here is a callback that did not land, never a turn that produced
+  // nothing. See {@link TaskAlreadyTerminalError}.
+  try {
+    await step.do(`${at}notify`, async () => {
+      await createPushChannel(options.signingKey, options.push).deliver(task);
+    });
+  } catch (err) {
+    throw new TaskAlreadyTerminalError(err);
+  }
 }
 
 /**
@@ -164,14 +198,17 @@ export interface AbandonedTaskOptions {
  * would also be silent in the Workflows console. `cause` is what an operator
  * needs to see, not the delivery's own secondary fault.
  *
- * **No "did we already deliver?" bookkeeping is needed, and none should be
- * added.** If the ordinary delivery already persisted a terminal Task and only
- * the callback failed, this one asks {@link AbandonedTaskOptions.saveTask} to
- * write `failed` over a row that is already terminal; the guarded write refuses,
- * returns `false`, and {@link deliverTerminalTask} suppresses the callback. That
- * is the same mechanism that makes cancellation safe, reused rather than
- * reimplemented — and it works only because this delivery runs under its own
- * step names.
+ * **It refuses to run at all once a terminal Task exists.** A
+ * {@link TaskAlreadyTerminalError} means the ordinary delivery persisted its
+ * result and only the callback failed, so the original fault is rethrown and
+ * nothing is written. An earlier draft of this claimed the guarded write alone
+ * made that safe; it did not. The write refused only cancellation conflicts, so
+ * `completed → failed` applied cleanly and a turn that succeeded would have been
+ * rewritten as a generic failure because a webhook was flaky. The guard now
+ * refuses any terminal-over-different-terminal write as a backstop, and this
+ * check is what stops the attempt being made in the first place — without it the
+ * recovery would quietly succeed at doing nothing, swallowing a real callback
+ * failure and logging "abandoned" about a completed turn.
  *
  * ## Why it is exported rather than private to `/round`
  *
@@ -186,6 +223,17 @@ export async function deliverAbandonedTask(
   cause: unknown,
   options: AbandonedTaskOptions
 ): Promise<void> {
+  // Nothing was abandoned: the ordinary delivery already persisted a terminal
+  // Task and only its callback failed. Rethrow the fault that actually
+  // happened, so the instance still errors exactly as it did before any
+  // recovery existed and the gateway's own backstop clears the pending marker.
+  //
+  // Checked **here** rather than in each caller's `catch` on purpose. This whole
+  // change exists because a recovery every host had to remember to wire was one
+  // three hosts forgot; a caveat every host had to remember to check would be
+  // the same mistake a second time.
+  if (cause instanceof TaskAlreadyTerminalError) throw cause.cause;
+
   const label = options.label ?? "agent";
 
   // Logged before anything is attempted: if the delivery below also fails, this

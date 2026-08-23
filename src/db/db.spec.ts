@@ -6,7 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { TaskState } from "@a2a-js/sdk";
 import { AgentDB, PLUGIN_MIGRATIONS_TABLE } from "./db.js";
 import { makeDoHelpers, doStorage } from "../testing/do.js";
-import { buildCompletedTask } from "../a2a/notify.js";
+import { buildCompletedTask, buildFailedTask } from "../a2a/notify.js";
 import type { PluginStore } from "./db.js";
 import type { TaskListQuery } from "./models/tasks.js";
 import type { SubtaskDraft } from "../subtasks/types.js";
@@ -169,6 +169,69 @@ describe("tasks", () => {
     });
 
     expect(result.applied).toBe(false);
+    expect(result.task?.status.state).toBe(TaskState.TASK_STATE_COMPLETED);
+  });
+
+  /**
+   * The hole the cancellation guards left open. A workflow whose `notify` step
+   * exhausts its retries throws *after* `complete` durably saved a completed
+   * Task; an abandoned-task recovery above it then tries to write a generic
+   * failure. Both rules above are about cancellation, so neither refused this —
+   * a turn that succeeded would be stored, and called back, as failed because a
+   * webhook was flaky.
+   */
+  it("refuses to save a failed task over one that already completed", async () => {
+    const result = await withDb("save-failed-over-completed", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      db.tasks.save(buildCompletedTask("t1", "c", "the answer"));
+      const failed = buildFailedTask("t1", "c", "generic failure copy");
+      const applied = db.tasks.save(failed);
+      return { applied, task: db.tasks.get("t1") };
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.task?.status.state).toBe(TaskState.TASK_STATE_COMPLETED);
+    // The answer is still there, not replaced by the failure's copy.
+    expect(JSON.stringify(result.task)).toContain("the answer");
+  });
+
+  /**
+   * The other direction, for the same reason — and the pair is why the rule is
+   * "a *different* terminal state" rather than "any write over a terminal row".
+   */
+  it("refuses to save a completed task over one that already failed", async () => {
+    const result = await withDb("save-completed-over-failed", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      db.tasks.save(buildFailedTask("t1", "c", "it broke"));
+      const applied = db.tasks.save(
+        buildCompletedTask("t1", "c", "the answer")
+      );
+      return { applied, task: db.tasks.get("t1") };
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.task?.status.state).toBe(TaskState.TASK_STATE_FAILED);
+  });
+
+  /**
+   * Must stay allowed. A Workflow replay legitimately re-runs `complete` and
+   * saves what it already saved; refusing that would return `false` and suppress
+   * the callback the replay exists to send.
+   */
+  it("allows a terminal task to be re-saved in the same state", async () => {
+    const result = await withDb("resave-same-terminal", async (db) => {
+      await db.ensureReady();
+      db.tasks.begin({ messageId: "m1", taskId: "t1", contextId: "c" });
+      db.tasks.save(buildCompletedTask("t1", "c", "the answer"));
+      const applied = db.tasks.save(
+        buildCompletedTask("t1", "c", "the answer")
+      );
+      return { applied, task: db.tasks.get("t1") };
+    });
+
+    expect(result.applied).toBe(true);
     expect(result.task?.status.state).toBe(TaskState.TASK_STATE_COMPLETED);
   });
 

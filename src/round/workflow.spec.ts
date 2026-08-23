@@ -713,3 +713,48 @@ describe("a task abandoned after its retries are exhausted", () => {
     );
   });
 });
+
+/**
+ * A turn that succeeded, whose callback did not.
+ *
+ * This is the case the recovery must **not** touch, and the first draft of it
+ * did: `notify` exhausts its retries and throws after `complete` durably saved a
+ * completed Task, the outer catch treats that as an abandoned turn, and a
+ * generic failure is written over a real answer and posted to the gateway. A
+ * turn recorded as failed because a webhook was flaky.
+ */
+describe("a turn whose callback fails after the result was saved", () => {
+  it("leaves the completed Task alone and rethrows the callback fault", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    error.mockClear();
+    const saved: unknown[] = [];
+    const { stub } = fakeAgent();
+    const spy = {
+      ...stub,
+      async saveTask(task: unknown) {
+        saved.push(task);
+        return true;
+      }
+    };
+    // `notify` is *not* cached, so it runs its body against an unreachable host
+    // and throws — the real shape of a callback that never lands.
+    const { step, ran } = fakeStep({
+      cached: {
+        "turn:0": { status: "replied", reply: "the answer", turns: 1 }
+      }
+    });
+
+    await expect(runHandleTask(params(), step, deps(spy))).rejects.toThrow();
+
+    // One write, and it is the completed one. A second would be the failure
+    // this spec exists to prevent.
+    expect(saved).toHaveLength(1);
+    expect(JSON.stringify(saved[0])).toContain("the answer");
+    expect(ran).not.toContain("abandoned:complete");
+    // And nothing claims the turn was abandoned, because it was not.
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("task abandoned"),
+      expect.anything()
+    );
+  });
+});

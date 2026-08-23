@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
-import { deliverAbandonedTask } from "./deliver.js";
+import {
+  deliverAbandonedTask,
+  deliverTerminalTask,
+  TaskAlreadyTerminalError
+} from "./deliver.js";
 import type { PlainTask } from "./task.js";
 
 /**
@@ -138,5 +142,64 @@ describe("deliverAbandonedTask", () => {
     );
 
     expect(ran).toEqual(["abandoned:complete"]);
+  });
+});
+
+/**
+ * The distinction between "this turn produced nothing" and "this turn produced a
+ * result the gateway has not heard about yet".
+ *
+ * Only the first is an abandoned task. Conflating them means an ordinary
+ * delivery whose callback failed unwinds into a recovery that writes a generic
+ * failure over a real answer — a turn that succeeded recorded as failed because
+ * a webhook was flaky.
+ */
+describe("a delivery that failed after its Task was saved", () => {
+  it("is reported as such rather than as an ordinary fault", async () => {
+    const { step } = fakeStep();
+    // Nothing cached, so `notify` runs its body and the unreachable host throws.
+    await expect(
+      deliverTerminalTask(step, {
+        push: PUSH,
+        signingKey: "unused-in-these-specs",
+        saveTask: async () => true,
+        terminal: () =>
+          ({ id: PUSH.taskId, contextId: PUSH.contextId }) as never
+      })
+    ).rejects.toBeInstanceOf(TaskAlreadyTerminalError);
+  });
+
+  /**
+   * The check lives inside the helper, not in each caller's `catch`. A recovery
+   * every host had to remember to wire is what this whole change was fixing; a
+   * caveat every host had to remember to check would be the same mistake again.
+   */
+  it("makes the recovery a no-op that rethrows the real fault", async () => {
+    // Cleared, not merely created: `spyOn` on an already-spied method hands back
+    // the same mock, so the specs above have already recorded calls on it.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    error.mockClear();
+    const { step, ran } = fakeStep();
+    const notifyFailed = new Error("gateway unreachable");
+    const saved: PlainTask[] = [];
+
+    await expect(
+      deliverAbandonedTask(
+        step,
+        new TaskAlreadyTerminalError(notifyFailed),
+        options({
+          saveTask: async (task: PlainTask) => {
+            saved.push(task);
+            return true;
+          }
+        })
+      )
+    ).rejects.toBe(notifyFailed);
+
+    // Nothing attempted, and nothing logged: this turn was not abandoned, and
+    // saying so would be worse than saying nothing.
+    expect(ran).toEqual([]);
+    expect(saved).toEqual([]);
+    expect(error).not.toHaveBeenCalled();
   });
 });
