@@ -7,7 +7,7 @@ import {
 import type { CoreConfig } from "../config.js";
 import { buildCompletedTask, buildFailedTask } from "../a2a/notify.js";
 import type { TurnPushContext } from "../a2a/push.js";
-import { deliverTerminalTask } from "../a2a/deliver.js";
+import { deliverAbandonedTask, deliverTerminalTask } from "../a2a/deliver.js";
 import type { GatewayIdentity } from "../a2a/verify.js";
 import type { RoundFailureKind } from "../agent/inference.js";
 import type { SubtaskId } from "../subtasks/types.js";
@@ -114,6 +114,13 @@ export interface HandleTaskDeps {
    * with no change here.
    */
   signingKey: string;
+  /**
+   * Log prefix for the abandoned-task line, conventionally the agent's tenant
+   * id. Optional because nothing here needs it to work — but a deployment that
+   * mounts several agents on one Worker gets one log stream, and without this
+   * every one of them reports going quiet under the same name.
+   */
+  label?: string;
 }
 
 /**
@@ -186,10 +193,70 @@ function turnStep(config: CoreConfig): WorkflowStepConfig {
 }
 
 /**
- * The orchestration itself, split from the `WorkflowEntrypoint` wiring so it can
- * be driven with a fake `step` in tests (workerd forbids constructing a
+ * The orchestration, split from the `WorkflowEntrypoint` wiring so it can be
+ * driven with a fake `step` in tests (workerd forbids constructing a
  * `WorkflowEntrypoint` outside the runtime) — and so a second agent can reuse it
  * with different deps.
+ *
+ * ## What the wrapper adds, and why it is not the host's job
+ *
+ * Core distinguishes two ways a turn ends badly. A **typed** failure is a value
+ * and {@link deliver} carries it. A **transient** fault throws, so the step
+ * retries and recovers from the durable rows without paying for a second
+ * inference. Neither covers a transient fault that never stops being one: the
+ * step exhausts its retries, {@link orchestrate} unwinds, the delivery below is
+ * never reached, and the instance errors with the Task still in `working` — the
+ * user told nothing, and the runtime recording a hang. See
+ * {@link deliverAbandonedTask}, which was written for a deployed agent that did
+ * exactly this on 2026-08-19.
+ *
+ * This is caught **here** rather than left to each `WorkflowEntrypoint` because
+ * everything the recovery needs is already in {@link HandleTaskDeps}: the stub
+ * (typed on `RoundAgentBase`, so `saveTask` and `sweepTaskChildren` are both
+ * reachable), `policy.copy.taskFailed`, and `signingKey`. A host has nothing to
+ * add — so asking it to remember buys nothing and costs exactly what it cost the
+ * starter, where three of four agents never wrote the `catch` at all.
+ */
+export async function runHandleTask(
+  p: HandleTaskParams,
+  step: WorkflowStep,
+  deps: HandleTaskDeps
+): Promise<void> {
+  try {
+    await orchestrate(p, step, deps);
+  } catch (cause) {
+    // Everything this needs is already in `deps` — which is the argument for it
+    // living here rather than in each host's `catch`. Four agents in the starter
+    // called this function and only one had written that `catch`; the other three
+    // carried the 2026-08-19 failure silently. A guard nobody can forget is worth
+    // more than a helper everybody must remember.
+    await deliverAbandonedTask(step, cause, {
+      push: {
+        taskId: p.taskId,
+        contextId: p.contextId,
+        pushUrl: p.pushUrl,
+        pushToken: p.pushToken,
+        jku: p.jku
+      },
+      signingKey: deps.signingKey,
+      // Resolved inside each closure, never hoisted — see {@link ResolveAgent}.
+      saveTask: (task) => deps.resolveAgent(p.identity).saveTask(task),
+      // The round never got far enough to say *which* credential or model was at
+      // fault, so `failureCopy` has nothing to answer and the policy's own words
+      // are the honest ones. The diagnostic is logged instead.
+      text: deps.policy.copy.taskFailed,
+      sweep: async () => {
+        await deps.resolveAgent(p.identity).sweepTaskChildren(p.taskId);
+      },
+      label: deps.label
+    });
+  }
+}
+
+/**
+ * The orchestration proper — every ordinary outcome ends inside here, and
+ * anything that escapes is what {@link runHandleTask} turns into a delivered
+ * failure.
  *
  * Every `step.do` return here is a small projection — a status, an id, a reply.
  * Never a Subtask row: a step return is capped at 1 MiB and a Subtask carries
@@ -198,9 +265,11 @@ function turnStep(config: CoreConfig): WorkflowStepConfig {
  *
  * **Step names are durable cache keys.** Everything inside the round loop carries
  * its round for that reason: `turn:<round>`, `deadline:<round>`, `scan:<round>`,
- * `cancel:<round>`. Renaming one silently re-runs its effect on replay.
+ * `cancel:<round>`. Renaming one silently re-runs its effect on replay — and the
+ * recovery path in {@link runHandleTask} runs under its own prefix for the same
+ * reason, so a second delivery cannot be handed this one's cached results.
  */
-export async function runHandleTask(
+async function orchestrate(
   p: HandleTaskParams,
   step: WorkflowStep,
   deps: HandleTaskDeps

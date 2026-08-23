@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
 import type { GatewayIdentity } from "@loopingai/a2a-protocol";
 import { resolveConfig } from "../config.js";
@@ -563,5 +563,198 @@ describe("a failed turn", () => {
     // floor.
     expect(seen).toEqual(["exhausted"]);
     expect(JSON.stringify(saved[0])).toContain(policy.copy.taskFailed);
+  });
+});
+
+/**
+ * A turn whose fault never stops being one.
+ *
+ * `step.do` retries a bounded number of times and then rethrows. Before this was
+ * caught here, that unwound the orchestration, skipped the delivery entirely, and
+ * left the Task in `working` while the runtime recorded a hang — observed in a
+ * deployed agent on 2026-08-19. These specs pin the recovery, and in particular
+ * the two halves of it that are easy to get backwards: it must **not** rethrow
+ * when the delivery worked, and it **must** rethrow the original cause when it
+ * did not.
+ *
+ * `markWorking` is the throwing step because it is the first one, so nothing else
+ * has run and the assertions are about the recovery alone.
+ */
+function abandoningAgent(saveTask?: () => Promise<boolean>) {
+  const saved: unknown[] = [];
+  return {
+    saved,
+    stub: {
+      async markWorking(): Promise<never> {
+        throw new Error("the provider refused every attempt");
+      },
+      async saveTask(task: unknown) {
+        saved.push(task);
+        return saveTask ? await saveTask() : true;
+      },
+      async sweepTaskChildren() {}
+    }
+  };
+}
+
+describe("a task abandoned after its retries are exhausted", () => {
+  it("delivers a failed Task carrying the policy's copy", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { saved, stub } = abandoningAgent();
+    const { step, ran } = fakeStep({
+      cached: { "abandoned:notify": undefined }
+    });
+
+    await runHandleTask(params(), step, deps(stub));
+
+    expect(ran).toContain("abandoned:complete");
+    expect(JSON.stringify(saved[0])).toContain(policy.copy.taskFailed);
+    // The diagnostic is logged, never shown — same rule as an ordinary failure.
+    expect(JSON.stringify(saved[0])).not.toContain("refused every attempt");
+  });
+
+  /**
+   * The load-bearing half. Rethrowing here would reproduce the runtime's "your
+   * Worker's code had hung and would never generate a response" record, which is
+   * the misleading artefact this recovery exists to remove — and the instance has
+   * genuinely finished its job by this point: the Task is terminal and the
+   * gateway has been told.
+   */
+  it("resolves once delivered, so the instance is not recorded as a hang", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = abandoningAgent();
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    await expect(
+      runHandleTask(params(), step, deps(stub))
+    ).resolves.toBeUndefined();
+  });
+
+  /**
+   * The other half. Swallowing a failed delivery would mark the instance
+   * successful while the user got nothing — worse than the erroring instance
+   * this replaced, and silent in the Workflows console too. The *original* cause
+   * is what an operator needs, not the delivery's secondary fault.
+   */
+  it("rethrows the original cause when the delivery itself fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+    const stub = {
+      async markWorking(): Promise<never> {
+        throw new Error("the provider refused every attempt");
+      },
+      async saveTask(): Promise<never> {
+        throw new Error("durable object unreachable");
+      },
+      async sweepTaskChildren() {}
+    };
+
+    await expect(runHandleTask(params(), step, deps(stub))).rejects.toThrow(
+      "the provider refused every attempt"
+    );
+  });
+
+  /**
+   * The guarded write is still the cancellation check on this path. A user who
+   * canceled while the retries were burning must not receive a `failed` callback
+   * for the Task they abandoned.
+   */
+  it("does not notify when a cancel already won the write", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = abandoningAgent(async () => false);
+    const { step, ran } = fakeStep({
+      cached: { "abandoned:notify": undefined }
+    });
+
+    await runHandleTask(params(), step, deps(stub));
+
+    expect(ran).toContain("abandoned:complete");
+    expect(ran).not.toContain("abandoned:notify");
+  });
+
+  /**
+   * Step names are durable cache keys, so this delivery runs in its own
+   * namespace. Sharing the ordinary one would hand a second delivery the first's
+   * cached `complete` — the failed Task would never be built, and the outcome
+   * would depend on how Workflows caches a step whose failure was caught.
+   */
+  it("runs under its own step names, never the ordinary delivery's", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = abandoningAgent();
+    const { step, ran } = fakeStep({
+      cached: { "abandoned:notify": undefined }
+    });
+
+    await runHandleTask(params(), step, deps(stub));
+
+    expect(ran).toContain("abandoned:complete");
+    expect(ran).not.toContain("complete");
+    expect(ran).not.toContain("notify");
+  });
+
+  /**
+   * Several agents share one Worker and therefore one log stream. Without the
+   * label every one of them reports going quiet under the same name, which is
+   * the moment an operator most needs to know which.
+   */
+  it("names the agent in the log", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = abandoningAgent();
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    await runHandleTask(params(), step, {
+      ...deps(stub),
+      label: "claude-coder"
+    });
+
+    expect(error).toHaveBeenCalledWith(
+      "[claude-coder] task abandoned after retries were exhausted",
+      expect.objectContaining({ taskId: "task-1" })
+    );
+  });
+});
+
+/**
+ * A turn that succeeded, whose callback did not.
+ *
+ * This is the case the recovery must **not** touch, and the first draft of it
+ * did: `notify` exhausts its retries and throws after `complete` durably saved a
+ * completed Task, the outer catch treats that as an abandoned turn, and a
+ * generic failure is written over a real answer and posted to the gateway. A
+ * turn recorded as failed because a webhook was flaky.
+ */
+describe("a turn whose callback fails after the result was saved", () => {
+  it("leaves the completed Task alone and rethrows the callback fault", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    error.mockClear();
+    const saved: unknown[] = [];
+    const { stub } = fakeAgent();
+    const spy = {
+      ...stub,
+      async saveTask(task: unknown) {
+        saved.push(task);
+        return true;
+      }
+    };
+    // `notify` is *not* cached, so it runs its body against an unreachable host
+    // and throws — the real shape of a callback that never lands.
+    const { step, ran } = fakeStep({
+      cached: {
+        "turn:0": { status: "replied", reply: "the answer", turns: 1 }
+      }
+    });
+
+    await expect(runHandleTask(params(), step, deps(spy))).rejects.toThrow();
+
+    // One write, and it is the completed one. A second would be the failure
+    // this spec exists to prevent.
+    expect(saved).toHaveLength(1);
+    expect(JSON.stringify(saved[0])).toContain("the answer");
+    expect(ran).not.toContain("abandoned:complete");
+    // And nothing claims the turn was abandoned, because it was not.
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("task abandoned"),
+      expect.anything()
+    );
   });
 });

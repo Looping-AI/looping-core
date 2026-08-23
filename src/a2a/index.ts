@@ -61,7 +61,13 @@ export {
   postNotification
 } from "./notify.js";
 
-export { deliverTerminalTask, type DeliverTerminalOptions } from "./deliver.js";
+export {
+  deliverTerminalTask,
+  deliverAbandonedTask,
+  TaskAlreadyTerminalError,
+  type DeliverTerminalOptions,
+  type AbandonedTaskOptions
+} from "./deliver.js";
 
 export { signCallerToken, type CallerTokenOptions } from "./caller-token.js";
 

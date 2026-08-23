@@ -36,6 +36,23 @@ export function stateOf(task: Task): TaskState {
 }
 
 /**
+ * The states a task never leaves.
+ *
+ * `INPUT_REQUIRED` and `AUTH_REQUIRED` are deliberately absent: a turn parked on
+ * either is waiting, not finished, and will move again.
+ */
+const TERMINAL_STATES: ReadonlySet<TaskState> = new Set([
+  TaskState.TASK_STATE_COMPLETED,
+  TaskState.TASK_STATE_FAILED,
+  TaskState.TASK_STATE_CANCELED,
+  TaskState.TASK_STATE_REJECTED
+]);
+
+function isTerminal(state: TaskState): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
+/**
  * Query methods for the `notify_tasks` table (async A2A task state).
  *
  * Bound to a drizzle handle by {@link AgentDB} and reached as `db.tasks.*`.
@@ -177,6 +194,19 @@ export function makeTasks(db: DB) {
      * `canceled` onto a `submitted`/`working` row, or re-writing it onto an
      * already-`canceled` one, stays allowed: that is how the a2a-js handler's own
      * cancel branch records the cancellation.
+     *
+     * **And no terminal row may be replaced by a *different* terminal state.**
+     * The two rules above were written about cancellation and between them left
+     * `completed → failed` wide open, which is not hypothetical: a workflow whose
+     * `notify` step exhausts its retries throws *after* `complete` durably saved
+     * a completed Task, and an abandoned-task recovery above it would then write
+     * a generic failure over a real answer and post a callback contradicting it.
+     * A turn that succeeded would be recorded as having failed because a webhook
+     * was flaky.
+     *
+     * Same terminal state re-written is still allowed, and must be: a Workflow
+     * replay legitimately re-runs `complete` and saves what it already saved, and
+     * refusing that would suppress the callback that replay exists to send.
      */
     save(task: Task): boolean {
       const existing = readOne(task.id);
@@ -197,6 +227,13 @@ export function makeTasks(db: DB) {
         existingState !== TaskState.TASK_STATE_SUBMITTED &&
         existingState !== TaskState.TASK_STATE_WORKING &&
         existingState !== TaskState.TASK_STATE_CANCELED
+      ) {
+        return false;
+      }
+      if (
+        isTerminal(existingState) &&
+        isTerminal(incomingState) &&
+        incomingState !== existingState
       ) {
         return false;
       }
