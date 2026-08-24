@@ -116,18 +116,18 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@a2a-js/sdk": "^1.0.0",
-    "@cloudflare/workers-types": "^5.20260804.1",
-    "@loopingai/a2a-protocol": "^0.2.0",
+    "@a2a-js/sdk": "^1.0.1",
+    "@cloudflare/workers-types": "^5.20260823.1",
+    "@loopingai/a2a-protocol": "^0.2.1",
     "drizzle-orm": "^0.45.2",
-    "jose": "^6.2.8",
+    "jose": "^6.2.10",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@cloudflare/vitest-pool-workers": ">=0.18",
     "@typescript-eslint/utils": ">=8",
-    "agents": "^0.20.0",
-    "ai": "^7.0.52",
+    "agents": "^0.21.0",
+    "ai": "^7.0.77",
     "vitest": ">=4",
     "workers-ai-provider": "^4.0.0"
   },
@@ -143,19 +143,19 @@
     }
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.20.1",
-    "@types/node": "^26.1.1",
-    "agents": "^0.20.0",
-    "ai": "^7.0.52",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@types/node": "^26.2.0",
+    "agents": "^0.21.0",
+    "ai": "^7.0.77",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^10.8.0",
+    "eslint": "^10.9.0",
     "husky": "^9.1.7",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.66.0",
-    "vitest": "^4.1.10",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11",
     "workers-ai-provider": "^4.0.0",
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.125.0"
   },
   "engines": {
     "node": ">=24"

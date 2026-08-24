@@ -219,6 +219,29 @@ raise.
 
 ---
 
+## Package Bumping
+
+Read the changelog for every **non-patch bump** — any minor or any major. The
+reason is not only compatibility: a minor often carries a new API that
+simplifies a pattern already written here, and a major sometimes requires one.
+A bump that typechecks and passes tests can still leave the better shape on the
+table, so the changelog is where the refactor opportunity is found, not the
+build.
+
+Two dependencies are exempt:
+
+- **wrangler** — minors go in without a changelog read. Run `npm run types`
+  before `npm run check`, so the regenerated `worker-configuration.d.ts` puts
+  any new platform types in front of the typechecker rather than in front of a
+  consumer.
+- **eslint** — goes in without a deep changelog read.
+
+Verify with `npm run check`, preceded by `npm run types` when wrangler moved.
+Run `npm test` as well: `check` catches the type and lint fallout of a bump,
+and only the suite catches a behavioural one.
+
+---
+
 ## Working here
 
 ```bash

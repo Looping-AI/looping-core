@@ -30,6 +30,33 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+/**
+ * Node's `Buffer`, re-typed — the global one cannot be trusted here.
+ *
+ * `@cloudflare/workers-types` declares `const Buffer: any` at global scope as of
+ * 5.20260823.1. That collides with the `var Buffer: BufferConstructor` and the
+ * `interface Buffer` `@types/node` declares, and TypeScript settles the
+ * collision by degrading the symbol in *both* meanings at once: the value
+ * becomes `any`, and the type keeps only the half of the interface declared in
+ * `buffer.buffer.d.ts` — `toString(encoding)`, `write` and `readUInt8` all
+ * vanish. So `b: Buffer` fails on `b.toString("utf8")` while `Buffer.from(…)`
+ * quietly passes as `any`, and `skipLibCheck` swallows the duplicate-identifier
+ * error that would have named the cause.
+ *
+ * Importing from `node:buffer` does not help: that module re-exports the very
+ * same degraded global. Naming the surface these two files use is what puts them
+ * back under the typechecker, and the surface is two calls and one method.
+ * Nothing about the runtime changes — this is still Node's `Buffer`.
+ */
+export interface Bytes extends Uint8Array {
+  toString(encoding?: "utf8" | "base64"): string;
+}
+
+export const NodeBuffer = Buffer as {
+  from(source: ArrayBuffer): Bytes;
+  from(source: string, encoding: "base64"): Bytes;
+};
+
 /** A stored request. `body` is utf-8 text; binary request bodies are not supported. */
 export interface RecordedRequest {
   method: string;
@@ -126,7 +153,7 @@ export function replayable(response: RecordedResponse): ReplayableResponse {
   return {
     status: response.statusCode,
     headers,
-    body: Buffer.from(response.body, "base64")
+    body: NodeBuffer.from(response.body, "base64")
   };
 }
 

@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   Cassette,
+  NodeBuffer,
   replayable,
+  type Bytes,
   type RecordedRequest,
   type RecordedResponse,
   type ReplayableResponse
@@ -197,7 +199,7 @@ class Recorder {
     if (handler) return handler(request);
 
     // Read once: the body is needed to key the cassette *and* to forward.
-    const bytes = Buffer.from(await request.arrayBuffer());
+    const bytes = NodeBuffer.from(await request.arrayBuffer());
     if (this.#allowNetwork.has(url.host)) return this.#live(request, bytes);
 
     const body = bytes.toString("utf8");
@@ -290,7 +292,7 @@ class Recorder {
   }
 
   /** The real call, with the headers the Worker sent minus the unforwardable. */
-  #live(request: VcrRequest, body: Buffer): Promise<Response> {
+  #live(request: VcrRequest, body: Bytes): Promise<Response> {
     const headers: [string, string][] = [];
     request.headers.forEach((value, name) => {
       if (!SKIP_REQUEST_HEADERS.has(name.toLowerCase())) {
@@ -316,10 +318,10 @@ class Recorder {
    */
   async #recordOne(
     request: VcrRequest,
-    requestBytes: Buffer
+    requestBytes: Bytes
   ): Promise<Response> {
     const live = await this.#live(request, requestBytes);
-    const bytes = Buffer.from(await live.arrayBuffer());
+    const bytes = NodeBuffer.from(await live.arrayBuffer());
     const recordedRequest: RecordedRequest = {
       method: request.method,
       url: request.url,
