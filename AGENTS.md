@@ -219,14 +219,46 @@ raise.
 
 ---
 
+## Package Bumping
+
+Read the changelog for every **non-patch bump** — any minor or any major. The
+reason is not only compatibility: a minor often carries a new API that
+simplifies a pattern already written here, and a major sometimes requires one.
+A bump that typechecks and passes tests can still leave the better shape on the
+table, so the changelog is where the refactor opportunity is found, not the
+build.
+
+Two dependencies are exempt:
+
+- **wrangler** — minors go in without a changelog read. Run `npm run types` and
+  commit the regenerated `worker-configuration.d.ts`: a wrangler bump moves the
+  bundled workerd, so the committed runtime types go stale and `npm run check`
+  fails on its `types:check` step until they are refreshed. That is the point —
+  new platform types land in front of the typechecker rather than in front of a
+  consumer.
+- **eslint** — goes in without a deep changelog read.
+
+Verify with `npm run check`, preceded by `npm run types` when wrangler moved.
+Run `npm test` as well: `check` catches the type and lint fallout of a bump,
+and only the suite catches a behavioural one.
+
+---
+
 ## Working here
 
 ```bash
-npm run check     # prettier + eslint + tsc (src) + tsc (test) + build
+npm run check     # types:check + prettier + eslint + tsc (src) + tsc (test) + build
 npm test          # vitest, inside real workerd
 npm run keys      # generate an Ed25519 A2A_SIGNING_KEY
-npm run types     # regenerate worker-configuration.d.ts from wrangler.jsonc
+npm run types     # regenerate worker-configuration.d.ts, then commit it
 ```
+
+`worker-configuration.d.ts` is generated but **committed**: it is an input to
+`tsc` and to eslint's type-aware pass, so a fresh clone must be able to
+typecheck without running a script first. `npm run types:check` — the first step
+of `check` — fails when the committed copy drifts from `wrangler.jsonc` or the
+installed workerd, and `scripts/verify-runtime-types.mjs` fails when it was
+regenerated without `--include-env=false` and so carries a global `Env`.
 
 Specs live next to the code they test (`src/**/*.spec.ts`) and run inside
 workerd, because `AgentDB` drives `ctx.storage.sql` and the Agents SDK `Session`
