@@ -5,12 +5,12 @@ import {
   type RequestContext
 } from "@a2a-js/sdk/server";
 import type { Task } from "@a2a-js/sdk";
-import type { GatewayIdentity } from "./verify.js";
+import type { GatekeeperIdentity } from "./verify.js";
 import type { AgentResolver } from "./agent-stub.js";
 import { textOf } from "./parts.js";
 
 /**
- * Derive a deterministic workflow instance id for a turn. Keyed on the gateway's
+ * Derive a deterministic workflow instance id for a turn. Keyed on the gatekeeper's
  * `messageId` (stable across dispatch retries), so re-creating it is a no-op —
  * the turn runs exactly once. Sanitized to the id charset.
  */
@@ -30,13 +30,13 @@ export function workflowIdForMessage(
  * describes the turn and the agent starts it.
  */
 export interface AcceptedTurn {
-  /** The gateway's message id — the idempotency key for the whole turn. */
+  /** The gatekeeper's message id — the idempotency key for the whole turn. */
   messageId: string;
   taskId: string;
   contextId: string;
   /** The caller's message, flattened to text. */
   text: string;
-  identity: GatewayIdentity;
+  identity: GatekeeperIdentity;
   /** Webhook the terminal task is POSTed to. */
   pushUrl: string;
   /** Per-task validation token echoed on the callback. */
@@ -54,7 +54,7 @@ export interface AcceptedTurn {
 export type TurnStarter = (turn: AcceptedTurn) => Promise<void>;
 
 export interface ExecutorConfig {
-  identity: GatewayIdentity;
+  identity: GatekeeperIdentity;
   /** This agent's card-signing JWKS URL — the callback JWT `jku`. */
   jku: string;
   resolveAgent: AgentResolver;
@@ -93,7 +93,7 @@ export async function ignoreAlreadyExists(
  * does not block on generation: it records a `submitted` task in the caller's DO
  * (idempotent on `messageId`), hands the turn to a durable workflow, and
  * publishes the accepted task immediately as the response. The workflow
- * generates the reply and POSTs it to the gateway's push-notification webhook
+ * generates the reply and POSTs it to the gatekeeper's push-notification webhook
  * out of band.
  *
  * The verified caller identity comes from the config — the outer Worker builds

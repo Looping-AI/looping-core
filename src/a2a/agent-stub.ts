@@ -1,5 +1,5 @@
 import type { Task, TaskState } from "@a2a-js/sdk";
-import type { GatewayIdentity } from "./verify.js";
+import type { GatekeeperIdentity } from "./verify.js";
 import type { PlainTask } from "./task.js";
 
 /**
@@ -20,7 +20,7 @@ import type { PlainTask } from "./task.js";
 export interface TaskAgent {
   /**
    * Record (or reuse) the `submitted` task for a turn. **Must be idempotent on
-   * `messageId`**: the gateway retries dispatch, and the executor relies on this
+   * `messageId`**: the gatekeeper retries dispatch, and the executor relies on this
    * plus a deterministic workflow id to make a turn run exactly once.
    */
   beginTask(input: {
@@ -65,4 +65,4 @@ export interface TaskListPage {
  * conventional implementation keys one DO instance per `identity.key`, which is
  * what makes a task unreachable from any other caller by construction.
  */
-export type AgentResolver = (identity: GatewayIdentity) => TaskAgent;
+export type AgentResolver = (identity: GatekeeperIdentity) => TaskAgent;

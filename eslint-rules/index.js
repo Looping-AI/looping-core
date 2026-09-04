@@ -1,22 +1,22 @@
 import { noDeprecatedObjectProperties } from "./no-deprecated-object-properties.js";
 
 /**
- * `@loopingai/core/eslint` — the lint rules this stack needs that no upstream
+ * `@dynamicagents/core/eslint` — the lint rules this stack needs that no upstream
  * plugin provides.
  *
  * Consume as a flat-config plugin:
  *
  * ```js
- * import looping from "@loopingai/core/eslint";
+ * import da from "@dynamicagents/core/eslint";
  *
  * export default [
  *   {
  *     files: ["src/**\/*.ts"],
- *     plugins: { looping },
+ *     plugins: { da },
  *     languageOptions: {
  *       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname }
  *     },
- *     rules: { "looping/no-deprecated-object-properties": "error" }
+ *     rules: { "da/no-deprecated-object-properties": "error" }
  *   }
  * ];
  * ```

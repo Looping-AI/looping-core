@@ -9,13 +9,13 @@ import {
   A2A_JWS_ALG,
   readIdentityClaim,
   readTenantClaim,
-  type GatewayIdentity
-} from "@loopingai/a2a-protocol";
+  type GatekeeperIdentity
+} from "@dynamicagents/g2a-protocol";
 
 /**
- * Verify the gateway identity JWT (the "B authenticates A" half of zero-trust).
+ * Verify the gatekeeper identity JWT (the "B authenticates A" half of zero-trust).
  *
- * The gateway signs a short-lived EdDSA JWT and sends it as a Bearer token on
+ * The gatekeeper signs a short-lived EdDSA JWT and sends it as a Bearer token on
  * every A2A call. Per RFC 7515 §4.1.2 it embeds a `jku` header pointing at its
  * public JWKS, so remote agents don't need a separately configured JWKS URL —
  * they read `jku` straight from the token and verify the key from there.
@@ -29,34 +29,38 @@ import {
  * are the whole zero-trust contract, and they arrived here byte-identical from
  * two independently-evolved agents. Do not weaken any of them, do not make any
  * of them optional, and do not add a bypass for local development: run a local
- * gateway instead.
+ * gatekeeper instead.
  */
 
 /**
  * The wire contract — claim names, algorithm, identity shape — comes from
- * `@loopingai/a2a-protocol`, which the gateway also depends on directly.
+ * `@dynamicagents/g2a-protocol`, which the gatekeeper also depends on directly.
  *
- * It used to be declared here and again in the gateway, each with a comment
- * saying it must match the other, because the gateway is not an agent and must
- * not import this package. That failed exactly as it always does: one side
- * moved to the `loopingai.org` namespace while the other still minted
- * `https://looping.ai/tenant`, verification read an empty tenant, and every
- * request 401'd with both builds green.
+ * It used to be declared here and again in the gatekeeper, each with a comment
+ * saying it must match the other, because the gatekeeper is not an agent and must
+ * not import this package. That failed exactly as it always does: the two sides
+ * drifted onto different claim namespaces, verification read an empty tenant, and
+ * every request 401'd with both builds green.
  *
- * Re-exported below so nothing downstream of `@loopingai/core/a2a` has to know
+ * The namespace moved again in g2a-protocol 0.3.0, to `dynamicagents.dev` — the
+ * same class of change, made deliberately this time. It is survivable only
+ * because both sides now read it from one package: bump the protocol dependency
+ * and ship core and `slack-gatekeeper` in the same deploy.
+ *
+ * Re-exported below so nothing downstream of `@dynamicagents/core/a2a` has to know
  * the split happened — an agent still imports these from here.
  */
 export {
   IDENTITY_CLAIM,
   TENANT_CLAIM,
-  type GatewayIdentity
-} from "@loopingai/a2a-protocol";
+  type GatekeeperIdentity
+} from "@dynamicagents/g2a-protocol";
 
-/** Thrown when a gateway token is missing or fails verification. */
-export class GatewayAuthError extends Error {
+/** Thrown when a gatekeeper token is missing or fails verification. */
+export class GatekeeperAuthError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "GatewayAuthError";
+    this.name = "GatekeeperAuthError";
   }
 }
 
@@ -80,7 +84,7 @@ export function bearerToken(request: Request): string | null {
 }
 
 export interface VerifyOptions {
-  /** Allowed gateway origins — validates both the `jku` domain and `iss` claim. */
+  /** Allowed gatekeeper origins — validates both the `jku` domain and `iss` claim. */
   allowedOrigins: string[];
   audience: string;
   /** Claim carrying the caller identity. Defaults to {@link IDENTITY_CLAIM}. */
@@ -90,29 +94,31 @@ export interface VerifyOptions {
 }
 
 /**
- * Normalize configured gateway origins to the HTTPS origins emitted in gateway
+ * Normalize configured gatekeeper origins to the HTTPS origins emitted in gatekeeper
  * JWT `jku` and `iss` claims. This accepts a hostname, `http://` URL, or URL
  * with a trailing slash while keeping the verification allowlist exact.
  */
-export function normalizeGatewayOrigins(origins: string[]): string[] {
+export function normalizeGatekeeperOrigins(origins: string[]): string[] {
   return origins.map((origin) => {
     const trimmed = origin.trim();
     if (!trimmed) {
-      throw new GatewayAuthError("allowed gateway origin cannot be empty");
+      throw new GatekeeperAuthError(
+        "allowed gatekeeper origin cannot be empty"
+      );
     }
     try {
       return new URL(`https://${trimmed.replace(/^https?:\/\//i, "")}`).origin;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new GatewayAuthError(
-        `invalid allowed gateway origin '${origin}': ${message}`
+      throw new GatekeeperAuthError(
+        `invalid allowed gatekeeper origin '${origin}': ${message}`
       );
     }
   });
 }
 
 /**
- * Verify a gateway JWT and return its payload, parsed identity and authorized
+ * Verify a gatekeeper JWT and return its payload, parsed identity and authorized
  * tenant.
  *
  * The `jku` JWK Set URL is read directly from the token's protected header
@@ -123,41 +129,41 @@ export function normalizeGatewayOrigins(origins: string[]): string[] {
  * signature/origin question, and only the caller knows which tenant the request
  * actually addressed. {@link createA2AWorker} compares the two.
  *
- * Throws {@link GatewayAuthError} on any failure.
+ * Throws {@link GatekeeperAuthError} on any failure.
  */
-export async function verifyGatewayToken(
+export async function verifyGatekeeperToken(
   token: string,
   opts: VerifyOptions
 ): Promise<{
   payload: JWTPayload;
-  identity: GatewayIdentity;
+  identity: GatekeeperIdentity;
   tenant: string;
 }> {
   try {
-    const allowedOrigins = normalizeGatewayOrigins(opts.allowedOrigins);
+    const allowedOrigins = normalizeGatekeeperOrigins(opts.allowedOrigins);
     // Extract jku from the protected header — this is the standard way the
-    // gateway advertises where to fetch its public key (RFC 7515 §4.1.2).
+    // gatekeeper advertises where to fetch its public key (RFC 7515 §4.1.2).
     const header = decodeProtectedHeader(token) as { jku?: string };
     const jku = header.jku;
     if (!jku) {
-      throw new GatewayAuthError(
-        "gateway JWT missing jku header (RFC 7515 §4.1.2)"
+      throw new GatekeeperAuthError(
+        "gatekeeper JWT missing jku header (RFC 7515 §4.1.2)"
       );
     }
     // Security: validate the jku origin before fetching. Without this an
     // attacker could forge a token with jku pointing at their own JWKS.
     const jkuOrigin = new URL(jku).origin;
     if (!allowedOrigins.includes(jkuOrigin)) {
-      throw new GatewayAuthError(
-        `jku origin '${jkuOrigin}' is not in the allowed gateway origins`
+      throw new GatekeeperAuthError(
+        `jku origin '${jkuOrigin}' is not in the allowed gatekeeper origins`
       );
     }
-    // Prevent one listed gateway from impersonating another: the origin where
+    // Prevent one listed gatekeeper from impersonating another: the origin where
     // keys are fetched must match the origin that issued the token.
     const rawIss = decodeJwt(token).iss ?? "";
     const issOrigin = new URL(rawIss).origin;
     if (issOrigin !== jkuOrigin) {
-      throw new GatewayAuthError(
+      throw new GatekeeperAuthError(
         `jku origin '${jkuOrigin}' does not match iss origin '${issOrigin}'`
       );
     }
@@ -177,7 +183,7 @@ export async function verifyGatewayToken(
       tenant: readTenantClaim(payload, opts.tenantClaim)
     };
   } catch (err) {
-    if (err instanceof GatewayAuthError) throw err;
-    throw new GatewayAuthError((err as Error).message);
+    if (err instanceof GatekeeperAuthError) throw err;
+    throw new GatekeeperAuthError((err as Error).message);
   }
 }

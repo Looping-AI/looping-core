@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { jwksUrl } from "@loopingai/a2a-protocol";
+import { jwksUrl } from "@dynamicagents/g2a-protocol";
 import { SelfOrigin } from "./self-origin.js";
 import { AGENT_ORIGIN } from "../testing/fixtures.js";
 

@@ -5,7 +5,7 @@ import {
   validateVersion
 } from "@a2a-js/sdk/server";
 import { RequestMalformedError, toJsonRpcError } from "@a2a-js/sdk/errors";
-import { JWKS_PATH, endpointUrl } from "@loopingai/a2a-protocol";
+import { JWKS_PATH, endpointUrl } from "@dynamicagents/g2a-protocol";
 import {
   A2A_RPC_PATH,
   buildBaseCard,
@@ -17,24 +17,24 @@ import {
 } from "../a2a/card.js";
 import { buildCallContext, extensionHeaders } from "../a2a/context.js";
 import {
-  GatewayAuthError,
+  GatekeeperAuthError,
   bearerToken,
-  verifyGatewayToken,
-  type GatewayIdentity
+  verifyGatekeeperToken,
+  type GatekeeperIdentity
 } from "../a2a/verify.js";
 import { A2AExecutor, type TurnStarter } from "../a2a/executor.js";
 import { DurableTaskStore } from "../a2a/task-store.js";
 import type { AgentResolver } from "../a2a/agent-stub.js";
-import { parseGatewayOrigins, type A2ASecretsEnv } from "../env.js";
+import { parseGatekeeperOrigins, type A2ASecretsEnv } from "../env.js";
 import type { MountedAgent } from "./define-agent.js";
 
 /**
- * The A2A Worker: the zero-trust, no-shared-secrets edge every Looping agent
+ * The A2A Worker: the zero-trust, no-shared-secrets edge every Dynamic Agents agent
  * puts in front of its Durable Object.
  *
  * Trust flows entirely on domains and asymmetric (Ed25519) signatures over
- * public JWKS: a gateway verifies and pins this agent's identity from its signed
- * card at registration ("G knows R"), and this Worker verifies the gateway's
+ * public JWKS: a gatekeeper verifies and pins this agent's identity from its signed
+ * card at registration ("G knows R"), and this Worker verifies the gatekeeper's
  * identity JWT on every JSON-RPC call ("R knows G"). No secret is ever shared in
  * either direction.
  *
@@ -52,7 +52,7 @@ import type { MountedAgent } from "./define-agent.js";
  *
  * This replaces mounting a handler per path prefix. That could not work: the
  * card is a **well-known URI**, which RFC 8615 defines per-authority, so only
- * one card per origin is discoverable at the registered path — a gateway
+ * one card per origin is discoverable at the registered path — a gatekeeper
  * resolving `…/.well-known/agent-card.json` against the origin found whichever
  * agent owned the bare path and pinned *its* key for all of them.
  *
@@ -62,7 +62,7 @@ import type { MountedAgent } from "./define-agent.js";
  *     `jku`.
  *  2. `GET …/.well-known/agent-card.json` — the signed **stub** card for the
  *     origin. Matched by suffix, since that path is fixed by the spec.
- *  3. `POST rpcPath` — gateway-authenticated JSON-RPC, routed to the named
+ *  3. `POST rpcPath` — gatekeeper-authenticated JSON-RPC, routed to the named
  *     tenant. `GetExtendedAgentCard` returns that tenant's own signed card;
  *     everything else runs a turn against its Durable Object.
  *
@@ -83,13 +83,13 @@ export {
 /**
  * Default path serving the card-signing public JWKS (the card's `jku`).
  *
- * From `@loopingai/a2a-protocol`, because the gateway serves its own JWKS at
+ * From `@dynamicagents/g2a-protocol`, because the gatekeeper serves its own JWKS at
  * the same path and fetches ours from whatever `jku` says — see
  * {@link file://../a2a/verify.ts} for why the two sides share a package rather
  * than a comment. Re-exported so this stays importable from
- * `@loopingai/core/worker`, where it has always lived.
+ * `@dynamicagents/core/worker`, where it has always lived.
  */
-export { JWKS_PATH } from "@loopingai/a2a-protocol";
+export { JWKS_PATH } from "@dynamicagents/g2a-protocol";
 
 /** The JSON-RPC method carrying a turn (v1.0 renamed v0.3's `message/send`). */
 const SEND_MESSAGE_METHOD = "SendMessage";
@@ -98,8 +98,8 @@ const SEND_MESSAGE_METHOD = "SendMessage";
 export interface A2ASecrets {
   /** Ed25519 private JWK, as JSON. See {@link A2ASecretsEnv.A2A_SIGNING_KEY}. */
   signingKey: string;
-  /** Origin allowlist. See {@link A2ASecretsEnv.GATEWAY_ORIGINS}. */
-  gatewayOrigins: string;
+  /** Origin allowlist. See {@link A2ASecretsEnv.GATEKEEPER_ORIGINS}. */
+  gatekeeperOrigins: string;
 }
 
 /** One agent served on this origin — everything that differs between tenants. */
@@ -162,36 +162,36 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
   rpcPath?: string;
   /**
    * Where to read this deployment's two secrets. Defaults to the documented
-   * names, `env.A2A_SIGNING_KEY` and `env.GATEWAY_ORIGINS`.
+   * names, `env.A2A_SIGNING_KEY` and `env.GATEKEEPER_ORIGINS`.
    *
    * There is **one signing key per origin**, not one per tenant: the card is
-   * per-origin now, so the key the gateway pins is too. Nothing was lost — the
+   * per-origin now, so the key the gatekeeper pins is too. Nothing was lost — the
    * tenants share a Worker and an `env`, so they could always read each other's
    * secrets, and separate keys never expressed a boundary that existed.
    *
    * ```ts
    * secrets: (env) => ({
    *   signingKey: env.AGENT_KEY,
-   *   gatewayOrigins: env.ALLOWED_GATEWAYS
+   *   gatekeeperOrigins: env.ALLOWED_GATEKEEPERS
    * })
    * ```
    *
    * Renaming does not weaken anything: the same key is still Ed25519, still
    * signs the cards and every callback JWT, and its public half is still what
-   * the gateway pins. Only where it is read from changes.
+   * the gatekeeper pins. Only where it is read from changes.
    */
   secrets?: (env: TEnv) => A2ASecrets;
   /**
-   * The audience a gateway JWT must carry.
+   * The audience a gatekeeper JWT must carry.
    *
    * Defaults to this deployment's **own endpoint** — `${origin}${rpcPath}`, the
    * same URL its cards advertise as their interface — and that default is
-   * almost certainly what you want. Setting this is for a gateway that mints
+   * almost certainly what you want. Setting this is for a gatekeeper that mints
    * something else.
    *
    * The audience is one half of a two-sided contract: whatever is required here
-   * has to be exactly what the calling gateway *mints*, and a mismatch is a 401
-   * on every request. looping-gateway mints
+   * has to be exactly what the calling gatekeeper *mints*, and a mismatch is a 401
+   * on every request. slack-gatekeeper mints
    * `new URL(agent.a2aEndpoint).origin + pathname`, which is what this default
    * matches.
    *
@@ -208,16 +208,16 @@ export interface A2AWorkerOptions<TEnv = A2ASecretsEnv> {
    * before turning it on.
    */
   advertiseSecuritySchemes?: boolean;
-  /** Claim carrying the caller identity. Defaults to the Looping namespace. */
+  /** Claim carrying the caller identity. Defaults to the Dynamic Agents namespace. */
   identityClaim?: string;
   /**
-   * Claim carrying the authorized tenant. Defaults to the Looping namespace.
+   * Claim carrying the authorized tenant. Defaults to the Dynamic Agents namespace.
    *
    * Both claim names are one side of the same contract as `audience`: whatever
-   * is named here has to be exactly what the calling gateway *mints*. Override
+   * is named here has to be exactly what the calling gatekeeper *mints*. Override
    * them together, or not at all — a deployment fronted by something other than
-   * looping-gateway that renames only the identity claim keeps reading the
-   * tenant from a key its gateway never sets, and every request 401s on the
+   * slack-gatekeeper that renames only the identity claim keeps reading the
+   * tenant from a key its gatekeeper never sets, and every request 401s on the
    * empty-tenant comparison below.
    */
   tenantClaim?: string;
@@ -293,7 +293,7 @@ function pushConfigError(rpcBody: {
   }
   if (!pushConfig.token) {
     return (
-      "configuration.taskPushNotificationConfig.token is required: the gateway " +
+      "configuration.taskPushNotificationConfig.token is required: the gatekeeper " +
       "uses it to correlate the callback to the pending task (A2A §13.2)"
     );
   }
@@ -424,7 +424,7 @@ export function createA2AWorker<TEnv extends object>(
     options.secrets ??
     ((env: TEnv): A2ASecrets => ({
       signingKey: (env as A2ASecretsEnv).A2A_SIGNING_KEY,
-      gatewayOrigins: (env as A2ASecretsEnv).GATEWAY_ORIGINS
+      gatekeeperOrigins: (env as A2ASecretsEnv).GATEKEEPER_ORIGINS
     }));
 
   return async function fetch(request: Request, env: TEnv): Promise<Response> {
@@ -432,7 +432,7 @@ export function createA2AWorker<TEnv extends object>(
     const origin = url.origin;
     const secrets = readSecrets(env);
     // This agent's own endpoint, which is also exactly what its card advertises
-    // as its interface — so the value the gateway was registered with and the
+    // as its interface — so the value the gatekeeper was registered with and the
     // value checked here are the same string by construction.
     const audience =
       typeof options.audience === "function"
@@ -449,7 +449,7 @@ export function createA2AWorker<TEnv extends object>(
       });
 
     // (1) Card-signing public JWKS — resolves every card's `jku` for the
-    // gateway. One key per origin, so one JWKS for every tenant.
+    // gatekeeper. One key per origin, so one JWKS for every tenant.
     if (request.method === "GET" && url.pathname === jwksPath) {
       return Response.json(publicCardJwks(privateJwk), {
         headers: { "cache-control": "public, max-age=3600" }
@@ -463,7 +463,7 @@ export function createA2AWorker<TEnv extends object>(
       return Response.json(await signCard(cardFor(options.manifest), signing));
     }
 
-    // (3) A2A JSON-RPC — gateway-authenticated, dispatched into the caller's DO.
+    // (3) A2A JSON-RPC — gatekeeper-authenticated, dispatched into the caller's DO.
     //
     // Matched on `rpcPath`, not on the method alone. Accepting every POST made
     // the path this agent advertises purely decorative: a call to any URL on the
@@ -472,15 +472,15 @@ export function createA2AWorker<TEnv extends object>(
     // worked instead of 404ing.
     if (request.method === "POST" && url.pathname === rpcPath) {
       const token = bearerToken(request);
-      if (!token) return unauthorized("missing gateway bearer token");
+      if (!token) return unauthorized("missing gatekeeper bearer token");
 
-      let identity: GatewayIdentity;
+      let identity: GatekeeperIdentity;
       let authorizedTenant: string;
       try {
-        ({ identity, tenant: authorizedTenant } = await verifyGatewayToken(
+        ({ identity, tenant: authorizedTenant } = await verifyGatekeeperToken(
           token,
           {
-            allowedOrigins: parseGatewayOrigins(secrets.gatewayOrigins),
+            allowedOrigins: parseGatekeeperOrigins(secrets.gatekeeperOrigins),
             audience,
             identityClaim: options.identityClaim,
             tenantClaim: options.tenantClaim
@@ -488,7 +488,9 @@ export function createA2AWorker<TEnv extends object>(
         ));
       } catch (err) {
         const message =
-          err instanceof GatewayAuthError ? err.message : "verification failed";
+          err instanceof GatekeeperAuthError
+            ? err.message
+            : "verification failed";
         return unauthorized(message);
       }
 
@@ -496,7 +498,7 @@ export function createA2AWorker<TEnv extends object>(
       // executor cannot route the call — refuse rather than fall back to a
       // shared instance. Guaranteed non-null past this point.
       if (!identity.key) {
-        return new Response("bad request: gateway identity missing key", {
+        return new Response("bad request: gatekeeper identity missing key", {
           status: 400
         });
       }
@@ -531,7 +533,7 @@ export function createA2AWorker<TEnv extends object>(
         );
       }
 
-      // The token names the tenant the gateway authorized; the body names the
+      // The token names the tenant the gatekeeper authorized; the body names the
       // one the call addressed. They must agree.
       //
       // This is the check that makes `tenant` more than a routing hint. Every
@@ -542,7 +544,7 @@ export function createA2AWorker<TEnv extends object>(
       // rather than a wildcard for the same reason.
       if (authorizedTenant !== requestedTenant) {
         return unauthorized(
-          `gateway token authorizes tenant '${authorizedTenant || "<none>"}', ` +
+          `gatekeeper token authorizes tenant '${authorizedTenant || "<none>"}', ` +
             `but the request addressed '${requestedTenant}'`
         );
       }

@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core/subtasks` — the delegation layer: what a round may hand out,
+ * `@dynamicagents/core/subtasks` — the delegation layer: what a round may hand out,
  * and how a proposal becomes durable drafts.
  */
 

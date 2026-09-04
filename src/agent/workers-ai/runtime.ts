@@ -3,7 +3,7 @@ import type { LanguageModel } from "ai";
 import type { ModelConfig } from "../../config.js";
 import type { AiEnv } from "../../env.js";
 import type {
-  GatewayMetadata,
+  AiGatewayMetadata,
   ModelOverrides,
   ModelPair,
   ModelRuntime,
@@ -47,14 +47,14 @@ export function createWorkersAIModelRuntime(
     }));
 
   /**
-   * Per-model Workers-AI settings: pin the gateway id (so per-call metadata does
-   * not drop the gateway route), attach correlation metadata when supplied, and
+   * Per-model Workers-AI settings: pin the AI Gateway id (so per-call metadata does
+   * not drop the AI Gateway route), attach correlation metadata when supplied, and
    * set the reasoning budget.
    *
    * Always returns a settings object, even with no metadata: `reasoning_effort`
    * has to reach the binding on every call, and an `undefined` return drops it.
    */
-  const chatSettings = (metadata?: GatewayMetadata) => ({
+  const chatSettings = (metadata?: AiGatewayMetadata) => ({
     gateway: { id: config.aiGatewayId, ...(metadata ? { metadata } : {}) },
     reasoning_effort: config.reasoningEffort
   });
@@ -87,7 +87,7 @@ export function createWorkersAIModelRuntime(
  * when an agent does not override it.
  *
  * One definition rather than one per base class. The body used to be written
- * twice, once in {@link file://../../host/agent.ts LoopingAgent.modelRuntime}
+ * twice, once in {@link file://../../host/agent.ts DynamicAgent.modelRuntime}
  * and once in
  * {@link file://../../round/subagent.ts RecipeSubagentHost.modelRuntime}, which
  * is the same duplication the seam exists to let a *consumer* avoid.

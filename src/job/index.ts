@@ -1,10 +1,10 @@
 /**
- * `@loopingai/core/job` — a long job a Durable Object owns through its alarm.
+ * `@dynamicagents/core/job` — a long job a Durable Object owns through its alarm.
  *
- * **The sibling of `@loopingai/core/alarm`, and the pairing is the point.**
+ * **The sibling of `@dynamicagents/core/alarm`, and the pairing is the point.**
  * `WakeMap` owns *when* an object wakes; this owns *what a job owes on waking*.
  * Neither depends on the other's reason for existing, and both are useful to a
- * plain `DurableObject` rather than only to a `LoopingAgent` — which is why they
+ * plain `DurableObject` rather than only to a `DynamicAgent` — which is why they
  * are subpaths and not part of the agent machinery.
  *
  * **Mechanism only.** Nothing here knows what a job *does*: no command, no

@@ -8,15 +8,15 @@ import {
   A2A_JWS_ALG,
   A2A_RPC_PATH,
   endpointUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 
 /**
- * The card signature uses the one algorithm every Looping A2A signature uses,
- * and the default RPC path is the one the gateway also knows. Both come from
- * `@loopingai/a2a-protocol` — see {@link file://./verify.ts} for why that is a
+ * The card signature uses the one algorithm every Dynamic Agents A2A signature uses,
+ * and the default RPC path is the one the gatekeeper also knows. Both come from
+ * `@dynamicagents/g2a-protocol` — see {@link file://./verify.ts} for why that is a
  * separate package rather than a constant declared on each side.
  */
-export { A2A_RPC_PATH } from "@loopingai/a2a-protocol";
+export { A2A_RPC_PATH } from "@dynamicagents/g2a-protocol";
 
 /**
  * The transport-independent half of an {@link AgentCard} — everything that does
@@ -72,7 +72,7 @@ export interface BuildCardOptions {
    */
   tenant?: string;
   /**
-   * Advertise the gateway's Bearer-JWT scheme in `securitySchemes`.
+   * Advertise the gatekeeper's Bearer-JWT scheme in `securitySchemes`.
    *
    * **Defaults to `false` for historical reasons that no longer hold — see
    * below before relying on the default.**
@@ -82,17 +82,17 @@ export interface BuildCardOptions {
    * (`{ httpAuthSecurityScheme: … }`) and not the decoded `$case` form. A
    * verifier that decodes the fetched card and then canonicalizes it through
    * `toJSON(fromJSON(card))` decodes twice, and the second pass collapsed
-   * `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to `{ gatewayJwt: {} }` — a
+   * `{ gatekeeperJwt: { httpAuthSecurityScheme: … } }` to `{ gatekeeperJwt: {} }` — a
    * different document from the one that was signed, so the signature failed.
-   * looping-gateway's `canonicalCardPayload` double-decodes exactly this way.
+   * slack-gatekeeper's `canonicalCardPayload` double-decodes exactly this way.
    *
    * **As of the pinned `@a2a-js/sdk` (1.0.1) that is fixed.** `card.spec.ts`
    * asserts it directly: an advertised-schemes card is a fixed point under
    * repeated decoding, and its signature verifies both as served and after a
    * double decode. So the safety argument for the `false` default is gone, and
-   * the remaining reason to keep it is deployment ordering — a gateway pinned to
+   * the remaining reason to keep it is deployment ordering — a gatekeeper pinned to
    * an older SDK copy would still collapse the oneof. Flip the default once the
-   * gateways in play are known to be on ≥1.0.1; the specs will hold the line if
+   * gatekeepers in play are known to be on ≥1.0.1; the specs will hold the line if
    * a later SDK regresses.
    *
    * `securityRequirements` is unaffected either way — it is a plain map, not a
@@ -103,12 +103,12 @@ export interface BuildCardOptions {
 }
 
 /**
- * The `httpAuthSecurityScheme` describing the gateway's Bearer JWT, and the
+ * The `httpAuthSecurityScheme` describing the gatekeeper's Bearer JWT, and the
  * requirement that references it. Split out so the requirement can be advertised
  * even when {@link BuildCardOptions.advertiseSecuritySchemes} keeps the scheme
  * itself off the wire.
  */
-const GATEWAY_SCHEME_ID = "gatewayJwt";
+const GATEKEEPER_SCHEME_ID = "gatekeeperJwt";
 
 /**
  * Build the (unsigned) AgentCard.
@@ -143,7 +143,7 @@ export function buildBaseCard(
     },
     supportedInterfaces: [
       {
-        // The gateway reads this URL off the card and mints `aud` from it with
+        // The gatekeeper reads this URL off the card and mints `aud` from it with
         // `audienceFor`; this Worker derives its expected audience the same
         // way. `endpointUrl` is what makes those provably equal — the protocol
         // package pins `audienceFor(endpointUrl(o, p)) === endpointUrl(o, p)`
@@ -159,7 +159,7 @@ export function buildBaseCard(
     iconUrl: undefined,
     securitySchemes: opts.advertiseSecuritySchemes
       ? {
-          [GATEWAY_SCHEME_ID]: {
+          [GATEKEEPER_SCHEME_ID]: {
             scheme: {
               $case: "httpAuthSecurityScheme",
               value: { description: "", scheme: "bearer", bearerFormat: "JWT" }
@@ -167,10 +167,12 @@ export function buildBaseCard(
           }
         }
       : {},
-    // v0.3's `security: [{ gatewayJwt: [] }]`. The empty `list` means the scheme
+    // v0.3's `security: [{ gatekeeperJwt: [] }]`. The empty `list` means the scheme
     // is required but carries no scopes. Safe to advertise unconditionally: this
     // is a plain map, so it survives the round trip that eats `securitySchemes`.
-    securityRequirements: [{ schemes: { [GATEWAY_SCHEME_ID]: { list: [] } } }],
+    securityRequirements: [
+      { schemes: { [GATEKEEPER_SCHEME_ID]: { list: [] } } }
+    ],
     signatures: []
   };
 }
@@ -189,7 +191,7 @@ export function buildBaseCard(
  * Signing the in-memory proto object instead would canonicalize `$case` tags and
  * proto defaults that never appear on the wire, and every signature would fail.
  *
- * A verifying gateway strips the `signatures` array, recomputes the canonical
+ * A verifying gatekeeper strips the `signatures` array, recomputes the canonical
  * payload, and verifies — pinning this key's `kid`+`jku` on first registration
  * (Trust-On-First-Use).
  */
@@ -217,8 +219,8 @@ export async function signCard(
  * returning {@link signCard}'s wire card means `toJSON` runs over a document
  * that has already been encoded. For most cards that is a no-op and looks fine
  * — which is the trap. `securitySchemes` is a protobuf *oneof*: encoding it
- * twice collapses `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to
- * `{ gatewayJwt: {} }`, the served document stops matching the one that was
+ * twice collapses `{ gatekeeperJwt: { httpAuthSecurityScheme: … } }` to
+ * `{ gatekeeperJwt: {} }`, the served document stops matching the one that was
  * signed, and every signature verification fails.
  *
  * So the double encode is latent today only because
@@ -254,7 +256,7 @@ export function wireCard(card: AgentCard): AgentCard {
 /**
  * Parse and validate the `A2A_SIGNING_KEY` secret into the private JWK used to
  * sign the card. Throws if the JWK is missing its `kid` (required for the JWS
- * protected header and gateway key-pinning).
+ * protected header and gatekeeper key-pinning).
  */
 export function parsePrivateJwk(raw: string): CardSigningConfig["privateJwk"] {
   const jwk = JSON.parse(raw) as { kid?: string };

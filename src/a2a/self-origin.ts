@@ -16,7 +16,7 @@
  * restates a value the request already carries, and it has to be kept
  * byte-identical by hand with the origin allowlist on the far side, in every
  * environment, forever. Every sibling that tried it took it back out —
- * `looping-gateway` discovers its own origin from the first signature-verified
+ * `slack-gatekeeper` discovers its own origin from the first signature-verified
  * request rather than being told, and a verifying Worker that once carried a
  * configured audience replaced it with `url.origin`.
  *
@@ -49,7 +49,7 @@
  * sign as another turn's origin.
  *
  * The cost of pinning is what an agent does not have: several identities. An
- * agent has one endpoint — the one its card advertises, the one a gateway calls
+ * agent has one endpoint — the one its card advertises, the one a gatekeeper calls
  * and a verifier allowlists — so there is nothing to follow. Note the asymmetry
  * with a *verifier*, which derives the audience it expects per request and must
  * not cache it: a verifier has to accept every hostname it answers on, while a

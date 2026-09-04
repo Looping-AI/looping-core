@@ -4,7 +4,7 @@
  * Core declares the *interface* and the caps; it does not declare a backend.
  * The predecessor backed this with `@cloudflare/shell`, which is experimental
  * ("expect breaking changes") — so an agent that never delegates file work should
- * not carry it. `@loopingai/plugins/workspace` supplies the shell-backed
+ * not carry it. `@dynamicagents/plugins/workspace` supplies the shell-backed
  * implementation and the model-facing `ws_read`/`ws_write`/`ws_list` tools; core
  * only needs to be able to *name* a workspace, because {@link ToolFamilyContext}
  * hands one to every tool family.

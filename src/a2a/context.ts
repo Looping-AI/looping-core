@@ -9,7 +9,7 @@ import {
   type ServerCallContext,
   type User
 } from "@a2a-js/sdk/server";
-import type { GatewayIdentity } from "./verify.js";
+import type { GatekeeperIdentity } from "./verify.js";
 
 /**
  * The per-call {@link ServerCallContext} bridge for a Workers `fetch` handler.
@@ -20,13 +20,13 @@ import type { GatewayIdentity } from "./verify.js";
  */
 
 /**
- * The verified calling gateway-agent, as the SDK's {@link User}. `userName` is
+ * The verified calling gatekeeper-agent, as the SDK's {@link User}. `userName` is
  * the canonical instance key (e.g. `custom:7:analytics`) — the same value the
  * agent Durable Object is keyed by, so the SDK's owner-scoped bookkeeping lines
  * up with the isolation this Worker already enforces by routing.
  */
-class GatewayUser implements User {
-  constructor(private readonly identity: GatewayIdentity) {}
+class GatekeeperUser implements User {
+  constructor(private readonly identity: GatekeeperIdentity) {}
 
   get isAuthenticated(): boolean {
     return true;
@@ -54,7 +54,7 @@ class GatewayUser implements User {
  */
 export function buildCallContext(
   request: Request,
-  identity: GatewayIdentity,
+  identity: GatekeeperIdentity,
   tenant: string
 ): ServerCallContext {
   const headers: RequestHeaders = {};
@@ -64,7 +64,7 @@ export function buildCallContext(
     extensions: Extensions.parseServiceParameter(
       request.headers.get(HTTP_EXTENSION_HEADER) ?? undefined
     ),
-    user: new GatewayUser(identity),
+    user: new GatekeeperUser(identity),
     headers,
     requestedVersion: request.headers.get(A2A_VERSION_HEADER) ?? undefined,
     tenant

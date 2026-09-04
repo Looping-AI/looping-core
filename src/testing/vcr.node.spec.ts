@@ -263,11 +263,11 @@ describe("routing", () => {
     // Replaces what MockAgent interceptors did: a fixture, not a recording.
     const vcr = playback({
       handlers: {
-        "gateway.test": () => new Response("jwks", { status: 200 })
+        "gatekeeper.test": () => new Response("jwks", { status: 200 })
       }
     });
     const res = await vcr.outboundService(
-      request("https://gateway.test/.well-known/jwks.json")
+      request("https://gatekeeper.test/.well-known/jwks.json")
     );
     expect(await res.text()).toBe("jwks");
   });

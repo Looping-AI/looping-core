@@ -1,5 +1,5 @@
 import tseslint from "typescript-eslint";
-import looping from "./eslint-rules/index.js";
+import da from "./eslint-rules/index.js";
 
 const LINTED_FILES = ["src/**/*.ts", "test/**/*.ts"];
 
@@ -31,7 +31,7 @@ export default tseslint.config(
     // Type-aware pass — enables @deprecated detection without switching the
     // whole config to recommendedTypeChecked and its stricter rule set.
     files: LINTED_FILES,
-    plugins: { "@typescript-eslint": tseslint.plugin, looping },
+    plugins: { "@typescript-eslint": tseslint.plugin, da },
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
@@ -43,7 +43,7 @@ export default tseslint.config(
       "@typescript-eslint/no-deprecated": "error",
       // Covers the object-literal keys `no-deprecated` structurally cannot see —
       // i.e. every `generateText({ system: … })`-style options bag. See the rule.
-      "looping/no-deprecated-object-properties": "error"
+      "da/no-deprecated-object-properties": "error"
     }
   },
   {

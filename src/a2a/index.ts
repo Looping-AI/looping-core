@@ -1,22 +1,22 @@
 /**
- * `@loopingai/core/a2a` — the A2A protocol adapter.
+ * `@dynamicagents/core/a2a` — the A2A protocol adapter.
  *
- * The zero-trust contract in both directions (verify the gateway with its public
+ * The zero-trust contract in both directions (verify the gatekeeper with its public
  * JWKS, prove ourselves with ours), the accept-and-notify task lifecycle, and the
  * narrowed task types that survive Durable Object RPC. Nothing here knows what an
  * agent *does* — past {@link A2AExecutor} everything is plain strings.
  *
- * ## The wire values come from `@loopingai/a2a-protocol`
+ * ## The wire values come from `@dynamicagents/g2a-protocol`
  *
  * Claim names, the algorithm, the well-known paths and the audience rule are a
- * two-sided contract with a token issuer, and the issuer — looping-gateway — is
+ * two-sided contract with a token issuer, and the issuer — slack-gatekeeper — is
  * not an agent and must not import this package. They live in a zero-dependency
  * leaf both sides depend on, and are re-exported here so an agent's imports are
  * unchanged: `IDENTITY_CLAIM`, `TENANT_CLAIM`, `A2A_RPC_PATH` and
- * `GatewayIdentity` still come from `@loopingai/core/a2a`.
+ * `GatekeeperIdentity` still come from `@dynamicagents/core/a2a`.
  *
  * The pure helpers are re-exported too, because an agent that builds a URL by
- * hand is an agent that can disagree with the gateway about it.
+ * hand is an agent that can disagree with the gatekeeper about it.
  */
 
 export {
@@ -24,16 +24,16 @@ export {
   audienceFor,
   endpointUrl,
   jwksUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 
 export {
   IDENTITY_CLAIM,
   TENANT_CLAIM,
-  GatewayAuthError,
+  GatekeeperAuthError,
   bearerToken,
-  normalizeGatewayOrigins,
-  verifyGatewayToken,
-  type GatewayIdentity,
+  normalizeGatekeeperOrigins,
+  verifyGatekeeperToken,
+  type GatekeeperIdentity,
   type VerifyOptions
 } from "./verify.js";
 

@@ -1,20 +1,20 @@
-# @loopingai/core
+# @dynamicagents/core
 
-**The mandatory foundation for a Looping agent on Cloudflare Workers.**
+**The mandatory foundation for a Dynamic Agents agent on Cloudflare Workers.**
 
-Zero-trust A2A (signed AgentCard, gateway-JWT verification, no shared secrets), the
+Zero-trust A2A (signed AgentCard, gatekeeper-JWT verification, no shared secrets), the
 durable task lifecycle, the delegation and subagent runtime, and the test harness.
 
 You bring the loop and the prompts. Core brings everything you cannot choose not to have.
 
 ```bash
-npm install @loopingai/core
+npm install @dynamicagents/core
 ```
 
 > Part of a three-package split:
-> **`@loopingai/core`** (this) ·
-> [`looping-plugins`](https://github.com/Looping-AI/looping-plugins) (optional, composable capabilities) ·
-> [`looping-starter`](https://github.com/Looping-AI/looping-starter) (a working agent that composes them).
+> **`@dynamicagents/core`** (this) ·
+> [`plugins`](https://github.com/dynamicagents/plugins) (optional, composable capabilities) ·
+> [`starter`](https://github.com/dynamicagents/starter) (a working agent that composes them).
 
 ---
 
@@ -36,17 +36,17 @@ optional is a plugin. Anything opinionated belongs to your app.
 ### 1. Generate a signing key
 
 ```bash
-npx looping-keys
+npx da-keys
 ```
 
 Set the private JWK as `A2A_SIGNING_KEY` (`.env` locally; `wrangler deploy
 --secrets-file .env` or `wrangler secret put` when deployed) and the origins you accept
-calls from as `GATEWAY_ORIGINS`:
+calls from as `GATEKEEPER_ORIGINS`:
 
 ```ini
 # .env
 A2A_SIGNING_KEY={"crv":"Ed25519","d":"…","x":"…","kty":"OKP","kid":"a2a-2026-08-01"}
-GATEWAY_ORIGINS=["https://gateway.example.com"]
+GATEKEEPER_ORIGINS=["https://gatekeeper.example.com"]
 ```
 
 The public half is never configured anywhere — the Worker derives it from the private
@@ -55,7 +55,7 @@ key and serves it at the card's `jku`.
 ### 2. Put the A2A edge in front of your Durable Object
 
 ```ts
-import { createA2AWorker } from "@loopingai/core/worker";
+import { createA2AWorker } from "@dynamicagents/core/worker";
 
 const manifest = {
   name: "my-agent",
@@ -79,7 +79,7 @@ export default {
         // unreachable from any other caller by construction.
         resolveAgent: (identity) =>
           env.MY_AGENT.get(env.MY_AGENT.idFromName(identity.key!)),
-        // Must be idempotent: the gateway retries dispatch.
+        // Must be idempotent: the gatekeeper retries dispatch.
         startTurn: async (turn) => {
           await env.TURN_WORKFLOW.create({ id: turn.messageId, params: turn });
         }
@@ -90,7 +90,7 @@ export default {
 ```
 
 That handler serves three routes: the public JWKS, a **signed** stub AgentCard at
-`/.well-known/agent-card.json`, and gateway-authenticated JSON-RPC. Every POST is verified
+`/.well-known/agent-card.json`, and gatekeeper-authenticated JSON-RPC. Every POST is verified
 before a Durable Object is ever addressed.
 
 #### Agents are tenants
@@ -107,7 +107,7 @@ the shape changes.
 
 The card is the reason it has to be this way rather than a path prefix per agent. Its
 location is a **well-known URI**, which RFC 8615 defines per-authority, so exactly one card
-per origin is discoverable at the path A2A registered with IANA. A gateway resolving
+per origin is discoverable at the path A2A registered with IANA. A gatekeeper resolving
 `/.well-known/agent-card.json` against the origin finds that one card whatever prefix an
 agent is mounted behind — and pins its key for all of them.
 
@@ -142,22 +142,22 @@ unauthenticated field in the request body and a token minted for one agent could
 against any sibling. A token carrying no tenant claim is rejected rather than treated as a
 wildcard.
 
-> **Breaking.** Requires a gateway that mints both the endpoint audience and the tenant
-> claim, and registers agents with a tenant id — looping-gateway
-> [#62](https://github.com/Looping-AI/looping-gateway/pull/62). The two sides do not
+> **Breaking.** Requires a gatekeeper that mints both the endpoint audience and the tenant
+> claim, and registers agents with a tenant id — slack-gatekeeper
+> [#62](https://github.com/dynamicagents/slack-gatekeeper/pull/62). The two sides do not
 > interoperate across this change in either direction, so they deploy together and
 > registered agents are re-registered.
 
 ### 3. Write your Durable Object
 
-`LoopingAgent` is the DO body every agent has: the runtime and database built once
-per instance, one continuous Session per verified caller, the gateway callback
+`DynamicAgent` is the DO body every agent has: the runtime and database built once
+per instance, one continuous Session per verified caller, the gatekeeper callback
 channel, and the task lifecycle a Workflow drives. Three seams are yours.
 
 ```ts
-import { LoopingAgent, type PluginHost } from "@loopingai/core/host";
+import { DynamicAgent, type PluginHost } from "@dynamicagents/core/host";
 
-export class MyAgent extends LoopingAgent<Env> {
+export class MyAgent extends DynamicAgent<Env> {
   protected agentConfig() {
     return {
       model: {
@@ -189,11 +189,11 @@ probed for), and hand-rolling it is how two agents in one repo drift apart.
 
 ### 4. Delegate, if your agent delegates
 
-`@loopingai/core/round` adds the other half: durable Subtasks, concurrent
+`@dynamicagents/core/round` adds the other half: durable Subtasks, concurrent
 execution, isolated subagents, and the round loop over them.
 
 ```ts
-import { RoundAgentBase, type RoundPolicy } from "@loopingai/core/round";
+import { RoundAgentBase, type RoundPolicy } from "@dynamicagents/core/round";
 
 export class MyAgent extends RoundAgentBase<Env> {
   // …the three seams above, plus:
@@ -221,20 +221,20 @@ have.
 No root barrel. Each area is its own subpath, so importing the delegation layer does
 not drag in the A2A adapter, and the test harness cannot reach a production bundle.
 
-| Subpath                        | What's in it                                                                |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `@loopingai/core`              | `createAgentRuntime`, the plugin contract, config shapes, platform facts    |
-| `@loopingai/core/a2a`          | card signing, JWKS, gateway-JWT verify, push notify, task store, executor   |
-| `@loopingai/core/worker`       | `createA2AWorker()` — the whole zero-trust edge                             |
-| `@loopingai/core/agent`        | session, history, models + Workers AI, inference, budget, control tools     |
-| `@loopingai/core/host`         | `LoopingAgent` — the Durable Object body — and `PluginHost`                 |
-| `@loopingai/core/round`        | the delegating round loop: `RoundAgentBase`, `runHandleTask`, `runTurn`     |
-| `@loopingai/core/subtasks`     | delegation types, decomposition, the `delegate` tool                        |
-| `@loopingai/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace             |
-| `@loopingai/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`    |
-| `@loopingai/core/testing`      | VCR, `FakeSession`, `mockModel`, DO helpers, JWK fixtures — _workerd realm_ |
-| `@loopingai/core/testing/node` | the VCR recorder + cassette store — _Node realm, never import from a spec_  |
-| `@loopingai/core/eslint`       | the `no-deprecated-object-properties` rule                                  |
+| Subpath                            | What's in it                                                                 |
+| ---------------------------------- | ---------------------------------------------------------------------------- |
+| `@dynamicagents/core`              | `createAgentRuntime`, the plugin contract, config shapes, platform facts     |
+| `@dynamicagents/core/a2a`          | card signing, JWKS, gatekeeper-JWT verify, push notify, task store, executor |
+| `@dynamicagents/core/worker`       | `createA2AWorker()` — the whole zero-trust edge                              |
+| `@dynamicagents/core/agent`        | session, history, models + Workers AI, inference, budget, control tools      |
+| `@dynamicagents/core/host`         | `DynamicAgent` — the Durable Object body — and `PluginHost`                  |
+| `@dynamicagents/core/round`        | the delegating round loop: `RoundAgentBase`, `runHandleTask`, `runTurn`      |
+| `@dynamicagents/core/subtasks`     | delegation types, decomposition, the `delegate` tool                         |
+| `@dynamicagents/core/subagent`     | `RecipeSubagentBase`, resumable runs, fingerprinting, workspace              |
+| `@dynamicagents/core/db`           | `AgentDB`, `notify_tasks` + `subtasks` schema, migrations, `PluginStore`     |
+| `@dynamicagents/core/testing`      | VCR, `FakeSession`, `mockModel`, DO helpers, JWK fixtures — _workerd realm_  |
+| `@dynamicagents/core/testing/node` | the VCR recorder + cassette store — _Node realm, never import from a spec_   |
+| `@dynamicagents/core/eslint`       | the `no-deprecated-object-properties` rule                                   |
 
 `/testing*` and `/eslint` are structurally incapable of entering a runtime graph, and
 `npm run verify:exports` asserts exactly that before every publish.
@@ -246,31 +246,31 @@ not drag in the A2A adapter, and the test harness cannot reach a production bund
 No secret ever crosses the boundary, in either direction.
 
 ```
-Gateway ──── EdDSA JWT, jku → its public JWKS ────▶ Agent    "the agent knows the gateway"
-Agent   ──── signed AgentCard, jku → its JWKS  ────▶ Gateway  "the gateway knows the agent"
+Gatekeeper ──── EdDSA JWT, jku → its public JWKS ────▶ Agent    "the agent knows the gatekeeper"
+Agent   ──── signed AgentCard, jku → its JWKS  ────▶ Gatekeeper  "the gatekeeper knows the agent"
 ```
 
-`verifyGatewayToken` runs four checks, in this order, on every single call:
+`verifyGatekeeperToken` runs four checks, in this order, on every single call:
 
 1. **`jku` present** in the protected header (RFC 7515 §4.1.2).
 2. **`jku` origin is allowlisted** — validated _before_ the fetch, so an attacker
    cannot point `jku` at a JWKS they control.
-3. **`iss` origin equals `jku` origin** — one listed gateway cannot impersonate another.
+3. **`iss` origin equals `jku` origin** — one listed gatekeeper cannot impersonate another.
 4. **`jwtVerify` pinned to EdDSA.**
 
 All four are load-bearing. Do not make any of them optional, and do not add a
-local-development bypass — run a local gateway instead. `verify.spec.ts` asserts each
+local-development bypass — run a local gatekeeper instead. `verify.spec.ts` asserts each
 one negatively, including that an unlisted `jku` is rejected _before_ any network
 call happens.
 
 The agent's card is signed over its **wire (protobuf-JSON) encoding**, which is what
 makes the served document a fixed point under the repeated decoding a verifier
-performs. A gateway pins the card's `kid` + `jku` on first registration
+performs. A gatekeeper pins the card's `kid` + `jku` on first registration
 (Trust-On-First-Use).
 
 ### Calling out, and knowing your own origin
 
-The same key proves this agent to services that are not the gateway — another agent,
+The same key proves this agent to services that are not the gatekeeper — another agent,
 or any service that verifies against the published JWKS. `signCallerToken` mints the
 short-lived token for that: `iss` is
 this deployment's origin, `jku` is derived from it, and the audience is normalized to a
@@ -309,7 +309,7 @@ A capability is a plugin. Core never imports one — your app registers it, whic
 bundle size proportional to what you actually installed.
 
 ```ts
-import { definePlugin } from "@loopingai/core";
+import { definePlugin } from "@dynamicagents/core";
 
 export const scraper = (config: { apiKey: string }) =>
   definePlugin({
@@ -418,9 +418,9 @@ The harness both predecessor agents grew, shipped so you don't grow it a third t
 import {
   FakeSession,
   mockModel,
-  makeGatewayToken,
+  makeGatekeeperToken,
   makeDoHelpers
-} from "@loopingai/core/testing";
+} from "@dynamicagents/core/testing";
 
 const { withDb } = makeDoHelpers(env.MY_AGENT);
 
@@ -450,18 +450,18 @@ await withDb("accepts a turn once", async (db) => {
   auto-named from the file + describe + test names. Cassettes match on method, URL
   and body — never on headers, so a runtime upgrade cannot invalidate them — and a
   request with no active cassette is blocked rather than reaching the network.
-  Point vitest's `globalSetup` at `@loopingai/core/testing/vcr-global-setup`.
+  Point vitest's `globalSetup` at `@dynamicagents/core/testing/vcr-global-setup`.
 
 - **Fakes** — `FakeSession` (a `SessionLike` reference implementation) and `mockModel`
   (a scripted `LanguageModel`), so a loop can be driven with no model call at all.
-- **Fixtures** — Ed25519 keypairs and a gateway-JWT signer, so the zero-trust path is
-  exercisable end to end without a real gateway.
+- **Fixtures** — Ed25519 keypairs and a gatekeeper-JWT signer, so the zero-trust path is
+  exercisable end to end without a real gatekeeper.
 - **`createAgentHarness`** — the assembly of all of the above: send one A2A turn the
-  way a gateway does, and capture what comes back.
+  way a gatekeeper does, and capture what comes back.
 
   ```ts
   const harness = createAgentHarness({ worker, env, tenant: "reactive" });
-  using _ = harness.interceptGateway();
+  using _ = harness.interceptGatekeeper();
 
   const accepted = await harness.send("what's the weather?");
   expect(accepted.status.state).toBe(TaskState.TASK_STATE_SUBMITTED);
@@ -469,7 +469,7 @@ await withDb("accepts a turn once", async (db) => {
 
   It exists because the pieces above were never the hard part. The audience is the
   **endpoint**, not the origin; the tenant claim has to match the tenant in the
-  body; `SendMessage` is refused without a push config; and the gateway's JWKS has
+  body; `SendMessage` is refused without a push config; and the gatekeeper's JWKS has
   to be reachable or every spec below it reports a 401 about something else. Four
   facts, wrong the first time in every consumer that wrote this by hand.
 
@@ -478,11 +478,11 @@ await withDb("accepts a turn once", async (db) => {
 ## What core deliberately does _not_ contain
 
 - **Prompt copy of any kind.** Not a soul, not a round contract, not a user-facing
-  failure message. `@loopingai/core/round` ships the whole delegating loop but takes
+  failure message. `@dynamicagents/core/round` ships the whole delegating loop but takes
   every word it says from a [`RoundPolicy`](#the-round-policy) you write, because a
   run must never execute under an identity nobody chose.
 - **A loop you cannot replace.** `/round` is opt-in and its own subpath. An agent
-  whose turn is a single inference extends `LoopingAgent` directly, writes its own
+  whose turn is a single inference extends `DynamicAgent` directly, writes its own
   loop, and carries none of the delegation machinery in its bundle.
 - The main agent's soul. Core ships no prompt copy.
 - Config _values_ — model ids, budgets, limits. Core ships the shapes and safe
@@ -497,7 +497,7 @@ await withDb("accepts a turn once", async (db) => {
 
 - **Node** ≥ 24 (for build and test only — the package itself runs on workerd)
 - **Bindings:** `AI`, one Durable Object, one Workflow
-- **Secrets:** `A2A_SIGNING_KEY`, `GATEWAY_ORIGINS`
+- **Secrets:** `A2A_SIGNING_KEY`, `GATEKEEPER_ORIGINS`
 - **Peers, never bundled:** `agents`, `ai`, `workers-ai-provider`
 
 That last point is not stylistic: two copies of `agents` in one Worker breaks the
@@ -519,4 +519,4 @@ npm run verify:exports  # the publish gate: subpaths, ESM specifiers, realm isol
 
 ## License
 
-[GPL-3.0-only](./LICENSE).
+[Apache-2.0](./LICENSE).

@@ -8,12 +8,12 @@ import {
 /**
  * The Worker under test.
  *
- * `@loopingai/core` is a library, not a Worker — but its Durable Object pieces
+ * `@dynamicagents/core` is a library, not a Worker — but its Durable Object pieces
  * (`AgentDB` migrations, the subagent facet's own SQLite) can only be exercised
  * inside workerd. So this file is the minimal host that gives the pool something
  * to bind: a DO that owns an `AgentDB`, and a concrete subclass of the facet.
  *
- * It is deliberately thin. Anything richer belongs in `looping-starter`, where a
+ * It is deliberately thin. Anything richer belongs in `starter`, where a
  * real agent is the thing being tested rather than the harness.
  */
 
@@ -54,6 +54,6 @@ export class TestSubagent extends RecipeSubagentBase<Cloudflare.Env> {
 
 export default {
   async fetch(): Promise<Response> {
-    return new Response("looping-core test worker");
+    return new Response("da-core test worker");
   }
 } satisfies ExportedHandler<Cloudflare.Env>;

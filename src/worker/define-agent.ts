@@ -1,5 +1,5 @@
 import type { AgentManifest } from "../a2a/card.js";
-import type { GatewayIdentity } from "../a2a/verify.js";
+import type { GatekeeperIdentity } from "../a2a/verify.js";
 import type { TaskAgent } from "../a2a/agent-stub.js";
 import {
   ignoreAlreadyExists,
@@ -67,7 +67,7 @@ export interface MountedAgent<TEnv> {
   tenant: string;
   /** The transport-independent half of this agent's card. */
   manifest: AgentManifest;
-  resolveAgent(env: TEnv, identity: GatewayIdentity): TaskAgent;
+  resolveAgent(env: TEnv, identity: GatekeeperIdentity): TaskAgent;
   startTurn(env: TEnv, turn: AcceptedTurn): Promise<void>;
 }
 
@@ -90,7 +90,7 @@ export interface DefineAgentOptions<
   TAgent extends Rpc.DurableObjectBranded
 > {
   /**
-   * The tenant id a caller addresses this agent with, and what a gateway
+   * The tenant id a caller addresses this agent with, and what a gatekeeper
    * registers against. Renaming one is a re-registration, not a refactor.
    */
   tenant: string;
@@ -124,11 +124,14 @@ export interface AgentDefinition<
    * that key is what makes one caller's tasks unreachable from another's, so a
    * missing one is a routing failure, not a default.
    */
-  resolveAgent(env: TEnv, identity: GatewayIdentity): DurableObjectStub<TAgent>;
+  resolveAgent(
+    env: TEnv,
+    identity: GatekeeperIdentity
+  ): DurableObjectStub<TAgent>;
   /**
    * Start this agent's durable turn, idempotently.
    *
-   * The instance id is derived from the gateway's `messageId`, which is stable
+   * The instance id is derived from the gatekeeper's `messageId`, which is stable
    * across dispatch retries — so a retry finding its instance already running is
    * the idempotency working, not a failure. {@link ignoreAlreadyExists} swallows
    * exactly that race and rethrows everything else.

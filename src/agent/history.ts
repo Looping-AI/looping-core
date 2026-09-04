@@ -2,12 +2,12 @@ import type { ModelMessage } from "ai";
 import type { SessionMessage } from "agents/experimental/memory/session";
 
 /**
- * Session-history glue for the agent runtime: parse the gateway-authored `<turn>`
+ * Session-history glue for the agent runtime: parse the gatekeeper-authored `<turn>`
  * provenance wrapper, and bridge between plain text and the Agents-SDK Sessions
  * store. No A2A types cross this boundary — the {@link file://../a2a/parts.ts
  * A2A adapter} has already reduced the inbound message to a plain string.
  *
- * The gateway inlines a `<turn from="…" id="…" channel="…" at="…">…</turn>` tag
+ * The gatekeeper inlines a `<turn from="…" id="…" channel="…" at="…">…</turn>` tag
  * into the message text in multi-actor channels so the model — and anything
  * downstream that needs per-message provenance — can attribute "who said what".
  * This agent only *parses* that wrapper; it never authors one.
@@ -17,7 +17,7 @@ import type { SessionMessage } from "agents/experimental/memory/session";
  * text messages and the conversion to AI-SDK `ModelMessage`s is trivial.
  */
 
-/** The fields recovered from a gateway-rendered `<turn>` wrapper. */
+/** The fields recovered from a gatekeeper-rendered `<turn>` wrapper. */
 export interface ParsedTurn {
   from: string;
   /** Slack user id, as rendered. */
@@ -47,13 +47,13 @@ const ATTR_UNESCAPES: Record<string, string> = {
   quot: '"'
 };
 
-/** Reverse the gateway's attribute escaping — single pass so `&amp;` round-trips. */
+/** Reverse the gatekeeper's attribute escaping — single pass so `&amp;` round-trips. */
 function unescAttr(value: string): string {
   return value.replace(/&(amp|lt|gt|quot);/g, (_, e) => ATTR_UNESCAPES[e]);
 }
 
 /**
- * Recover the structured provenance from a gateway-authored turn. Returns null
+ * Recover the structured provenance from a gatekeeper-authored turn. Returns null
  * for any text that isn't a `<turn>` wrapper (plain messages, assistant replies),
  * so callers can treat the provenance as optional.
  */

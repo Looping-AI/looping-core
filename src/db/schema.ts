@@ -28,7 +28,7 @@ import {
  * Durable state for async A2A tasks (the accept + notify lifecycle).
  *
  * One row per task: written by the Worker's accept path (`beginTask`, keyed by
- * `message_id` for gateway dedupe) and mutated by the turn workflow via DO RPC
+ * `message_id` for gatekeeper dedupe) and mutated by the turn workflow via DO RPC
  * (`markWorking`, `saveTask`, `cancelTask`). `GetTask` / `ListTasks` read it
  * through `DurableTaskStore`.
  */
@@ -36,7 +36,7 @@ export const notifyTasks = sqliteTable(
   "notify_tasks",
   {
     taskId: text("task_id").primaryKey(),
-    /** Gateway-assigned dedupe key — null for tasks created outside `beginTask`. */
+    /** Gatekeeper-assigned dedupe key — null for tasks created outside `beginTask`. */
     messageId: text("message_id").unique(),
     /** A2A context id, denormalized out of `task_json` so `ListTasks` can filter on it. */
     contextId: text("context_id").notNull().default(""),

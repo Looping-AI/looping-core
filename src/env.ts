@@ -17,7 +17,7 @@
  * That is *all* it does. The secrets are read once per request and belong to the
  * deployment, not to an agent: several agents share one Worker as tenants of one
  * origin, and they share this one signing identity with it. What separates them
- * is the tenant claim on the gateway token, not a key apiece. See
+ * is the tenant claim on the gatekeeper token, not a key apiece. See
  * {@link file://./worker/index.ts}.
  */
 
@@ -27,48 +27,50 @@ export interface AiEnv {
 }
 
 /**
- * The two secrets every Looping agent must carry.
+ * The two secrets every Dynamic Agents agent must carry.
  *
  * - `A2A_SIGNING_KEY` — Ed25519 private JWK (JSON, **must** include `kid`). Signs
  *   the AgentCard and every push-notification callback JWT. Its public half is
- *   served at the agent's JWKS path and pinned by the gateway on first
+ *   served at the agent's JWKS path and pinned by the gatekeeper on first
  *   registration (Trust-On-First-Use).
- * - `GATEWAY_ORIGINS` — JSON array of origins allowed to call this agent. The
- *   allowlist a gateway JWT's `jku` and `iss` are checked against; see
+ * - `GATEKEEPER_ORIGINS` — JSON array of origins allowed to call this agent. The
+ *   allowlist a gatekeeper JWT's `jku` and `iss` are checked against; see
  *   {@link file://./a2a/verify.ts}.
  *
  * No shared secret ever crosses the boundary in either direction: the agent
- * verifies the gateway with the gateway's public JWKS, and the gateway verifies
+ * verifies the gatekeeper with the gatekeeper's public JWKS, and the gatekeeper verifies
  * the agent with the agent's.
  */
 export interface A2ASecretsEnv {
   A2A_SIGNING_KEY: string;
-  GATEWAY_ORIGINS: string;
+  GATEKEEPER_ORIGINS: string;
 }
 
 /** The minimum an agent Worker must bind for core to function. */
 export type CoreEnv = AiEnv & A2ASecretsEnv;
 
 /**
- * Parse `GATEWAY_ORIGINS`. Accepts a JSON array (the documented form) or a
+ * Parse `GATEKEEPER_ORIGINS`. Accepts a JSON array (the documented form) or a
  * single bare origin, so a misconfigured secret fails with a readable message
  * rather than as an empty allowlist that rejects every caller identically.
  */
-export function parseGatewayOrigins(raw: string): string[] {
+export function parseGatekeeperOrigins(raw: string): string[] {
   const trimmed = raw.trim();
-  if (!trimmed) throw new Error("GATEWAY_ORIGINS is empty");
+  if (!trimmed) throw new Error("GATEKEEPER_ORIGINS is empty");
   if (!trimmed.startsWith("[")) return [trimmed];
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
   } catch (err) {
     throw new Error(
-      `GATEWAY_ORIGINS is not valid JSON: ${(err as Error).message}`
+      `GATEKEEPER_ORIGINS is not valid JSON: ${(err as Error).message}`
     );
   }
   if (!Array.isArray(parsed) || parsed.some((o) => typeof o !== "string")) {
-    throw new Error("GATEWAY_ORIGINS must be a JSON array of origin strings");
+    throw new Error(
+      "GATEKEEPER_ORIGINS must be a JSON array of origin strings"
+    );
   }
-  if (parsed.length === 0) throw new Error("GATEWAY_ORIGINS is empty");
+  if (parsed.length === 0) throw new Error("GATEKEEPER_ORIGINS is empty");
   return parsed as string[];
 }

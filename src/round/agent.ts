@@ -4,7 +4,7 @@ import { validateRecipe } from "../contract/validation.js";
 import type { ResolvedRecipe } from "../contract/recipe.js";
 import type { AiEnv, A2ASecretsEnv } from "../env.js";
 import { stateOf } from "../db/index.js";
-import type { GatewayIdentity } from "../a2a/verify.js";
+import type { GatekeeperIdentity } from "../a2a/verify.js";
 import type { TurnPushContext } from "../a2a/push.js";
 import type { SessionLike } from "../agent/session.js";
 import {
@@ -13,7 +13,7 @@ import {
   sessionText
 } from "../agent/history.js";
 import { newTurnBudget, type TurnBudget } from "../agent/budget.js";
-import type { GatewayMetadata } from "../agent/model.js";
+import type { AiGatewayMetadata } from "../agent/model.js";
 import { FINGERPRINT_MISMATCH, subagentName } from "../subagent/index.js";
 import type {
   CompositionBranch,
@@ -28,7 +28,7 @@ import type {
   TurnTaskResult,
   TurnVerdict
 } from "../subtasks/types.js";
-import { LoopingAgent } from "../host/agent.js";
+import { DynamicAgent } from "../host/agent.js";
 import type { SubagentClass } from "./subagent.js";
 import type { RoundPolicy } from "./policy.js";
 import {
@@ -42,7 +42,7 @@ import {
  * A **delegating** agent: the round loop, the durable Subtasks it hands out, and
  * the isolated subagent execution beneath them.
  *
- * Everything {@link LoopingAgent} gives every agent, plus the half that only a
+ * Everything {@link DynamicAgent} gives every agent, plus the half that only a
  * delegating one needs — and it is all mechanism. A Workflow drives it through
  * native Cloudflare RPC (`runTaskTurn`, `scanSubtasks`, `executeSubtaskChunk`,
  * …), never HTTP: the DO is a private implementation detail of the Worker.
@@ -71,7 +71,7 @@ export abstract class RoundAgentBase<
   TEnv extends Cloudflare.Env & AiEnv & A2ASecretsEnv = Cloudflare.Env &
     AiEnv &
     A2ASecretsEnv
-> extends LoopingAgent<TEnv> {
+> extends DynamicAgent<TEnv> {
   private _instructions?: TurnInstructions;
 
   // --- the two extra seams a delegating agent fills ------------------------
@@ -149,7 +149,7 @@ export abstract class RoundAgentBase<
   async runTaskTurn(input: {
     taskId: string;
     text: string;
-    identity: GatewayIdentity;
+    identity: GatekeeperIdentity;
     round: number;
     mode: RoundMode;
     /** What the Task has left. Bounds this round. */
@@ -192,7 +192,7 @@ export abstract class RoundAgentBase<
     input: {
       taskId: string;
       text: string;
-      identity: GatewayIdentity;
+      identity: GatekeeperIdentity;
       round: number;
       mode: RoundMode;
       push?: TurnPushContext;
@@ -228,7 +228,7 @@ export abstract class RoundAgentBase<
       return { status: "delegated", reply, subtasks: existing };
     }
 
-    const metadata: GatewayMetadata = { taskId, round };
+    const metadata: AiGatewayMetadata = { taskId, round };
     const outcome = await runTurn({
       session,
       taskId,
@@ -247,7 +247,7 @@ export abstract class RoundAgentBase<
       instructions: this.instructions,
       partialNote: policy.copy.partialNote,
       // The key carries the round so two rounds of one Task cannot collide on
-      // the gateway, which a bare step index would.
+      // the gatekeeper, which a bare step index would.
       onContent: channel?.stream((step) => `r${round}:step:${step}`)
     });
     // Terminal for this round with nothing to persist — the kind rides out with
@@ -436,7 +436,7 @@ export abstract class RoundAgentBase<
     }
 
     // Post progress the chunk emitted (best-effort; `working` never throws).
-    // Deterministic keys let the gateway dedupe a re-posted event on replay.
+    // Deterministic keys let the gatekeeper dedupe a re-posted event on replay.
     if (push) {
       const channel = this.push(push);
       for (const event of outcome.progress) {

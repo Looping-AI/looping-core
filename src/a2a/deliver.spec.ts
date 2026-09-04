@@ -23,7 +23,7 @@ const PUSH = {
   contextId: "ctx-1",
   // Unreachable on purpose: `notify` is cached away in every spec here, and one
   // that reaches the network has already failed the assertion it cares about.
-  pushUrl: "https://gateway.invalid/push",
+  pushUrl: "https://gatekeeper.invalid/push",
   pushToken: "push-token",
   jku: "https://agent.invalid/.well-known/jwks.json"
 };
@@ -147,7 +147,7 @@ describe("deliverAbandonedTask", () => {
 
 /**
  * The distinction between "this turn produced nothing" and "this turn produced a
- * result the gateway has not heard about yet".
+ * result the gatekeeper has not heard about yet".
  *
  * Only the first is an abandoned task. Conflating them means an ordinary
  * delivery whose callback failed unwinds into a recovery that writes a generic
@@ -180,7 +180,7 @@ describe("a delivery that failed after its Task was saved", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     error.mockClear();
     const { step, ran } = fakeStep();
-    const notifyFailed = new Error("gateway unreachable");
+    const notifyFailed = new Error("gatekeeper unreachable");
     const saved: PlainTask[] = [];
 
     await expect(

@@ -30,12 +30,12 @@ import type { ModelConfig } from "../config.js";
 
 /**
  * Custom metadata attached to the AI Gateway log for every call a pair makes.
- * The gateway's own `metadata` is otherwise `null`, so a model call can only be
+ * AI Gateway's own `metadata` is otherwise `null`, so a model call can only be
  * tied back to its task by timestamp; stamping `{ taskId, round }` (a turn) or
  * `{ taskId, subtaskId }` (a chunk) makes correlation exact. Values are limited
- * to the gateway's accepted scalar set.
+ * to AI Gateway's accepted scalar set.
  */
-export type GatewayMetadata = Record<string, number | string | boolean>;
+export type AiGatewayMetadata = Record<string, number | string | boolean>;
 
 export interface ModelOverrides {
   /** Test override for the primary slot. */
@@ -54,8 +54,8 @@ export interface ModelOverrides {
   primaryModelId?: string;
   /** The provider's model id for the fallback slot. See {@link primaryModelId}. */
   fallbackModelId?: string;
-  /** AI Gateway log metadata for correlation — see {@link GatewayMetadata}. */
-  metadata?: GatewayMetadata;
+  /** AI Gateway log metadata for correlation — see {@link AiGatewayMetadata}. */
+  metadata?: AiGatewayMetadata;
 }
 
 /** The primary/fallback models (lazily memoized) plus their ids for logging. */
@@ -80,7 +80,7 @@ export interface ModelRuntime {
  * How a provider is supplied to an agent: given the Worker env and the agent's
  * *resolved* model config, return a runtime.
  *
- * Both base-class seams — `LoopingAgent.modelRuntime` and
+ * Both base-class seams — `DynamicAgent.modelRuntime` and
  * `RecipeSubagentHost.modelRuntime` — take this shape, which is the point of it.
  * A provider written as one of these is defined once and referenced from the
  * agent and its subagent facet, instead of being spelled out twice in two class
@@ -90,7 +90,7 @@ export interface ModelRuntime {
  * Config arrives as an argument rather than being read off `this`: the facet
  * resolves its config inside `buildRuntime` and calls the seam from there, so
  * there is no `this.config` to read at that point — and a factory that cannot
- * reach for one cannot disagree with its caller about which gateway the agent
+ * reach for one cannot disagree with its caller about which AI Gateway the agent
  * is on.
  */
 export type ModelRuntimeFactory<TEnv> = (

@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core/round` — the delegating round loop.
+ * `@dynamicagents/core/round` — the delegating round loop.
  *
  * A round agent answers the user or hands work to isolated subagents, waits for
  * their durable results, and decides again. This subpath ships the whole

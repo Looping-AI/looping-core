@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core/alarm` — many deadlines over a Durable Object's one alarm.
+ * `@dynamicagents/core/alarm` — many deadlines over a Durable Object's one alarm.
  *
  * A Durable Object has exactly **one** alarm, and an object that needs to wake
  * for more than one reason cannot simply call `setAlarm` from each of them: the
@@ -8,7 +8,7 @@
  * intent, and the only thing in a DO that calls `setAlarm`.
  *
  * **Its own subpath, deliberately.** This is useful to a plain `DurableObject`,
- * not only to a {@link LoopingAgent}, so it must be importable without pulling
+ * not only to a {@link DynamicAgent}, so it must be importable without pulling
  * the agent machinery into a bundle.
  *
  * **Why not `Agent.schedule()`.** The `agents` SDK has the same mechanism, but

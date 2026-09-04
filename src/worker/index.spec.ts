@@ -12,12 +12,12 @@ import type { A2ASecretsEnv } from "../env.js";
 import type { AgentResolver, TaskAgent } from "../a2a/agent-stub.js";
 import type { AcceptedTurn } from "../a2a/executor.js";
 import type { PlainTask } from "../a2a/task.js";
-import { makeGatewayToken, TEST_TENANT } from "../testing/auth.js";
+import { makeGatekeeperToken, TEST_TENANT } from "../testing/auth.js";
 import {
   AGENT_ORIGIN,
-  GATEWAY_ORIGIN,
+  GATEKEEPER_ORIGIN,
   TEST_AGENT_PRIVATE_JWK,
-  gatewayPublicJwks
+  gatekeeperPublicJwks
 } from "../testing/fixtures.js";
 
 /**
@@ -48,7 +48,7 @@ const hostManifest = manifest("worker-spec-host");
 
 const env: A2ASecretsEnv = {
   A2A_SIGNING_KEY: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
-  GATEWAY_ORIGINS: JSON.stringify([GATEWAY_ORIGIN])
+  GATEKEEPER_ORIGINS: JSON.stringify([GATEKEEPER_ORIGIN])
 };
 
 /** Never reached by these specs — every one is refused before dispatch. */
@@ -117,8 +117,8 @@ const sendMessage = (params: object, tenant: string = TEST_TENANT) => ({
 beforeAll(() => {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url === `${GATEWAY_ORIGIN}/.well-known/jwks.json`) {
-      return new Response(gatewayPublicJwks(), {
+    if (url === `${GATEKEEPER_ORIGIN}/.well-known/jwks.json`) {
+      return new Response(gatekeeperPublicJwks(), {
         headers: { "content-type": "application/json" }
       });
     }
@@ -142,7 +142,7 @@ describe("discovery routes", () => {
   it("serves the stub card at the well-known path, not any tenant's", async () => {
     // RFC 8615 reserves this URI per *authority*, so exactly one card is
     // discoverable here however many agents the origin serves. Serving a
-    // tenant's card would make that tenant the one every gateway pinned.
+    // tenant's card would make that tenant the one every gatekeeper pinned.
     const res = await worker(
       new Request(`${AGENT_ORIGIN}/${AGENT_CARD_PATH}`),
       env
@@ -176,7 +176,7 @@ describe("discovery routes", () => {
     const header = JSON.parse(
       atob(sig.protected.replace(/-/g, "+").replace(/_/g, "/"))
     );
-    // A gateway resolves the card's key from this, so it has to be this agent's.
+    // A gatekeeper resolves the card's key from this, so it has to be this agent's.
     expect(header.jku).toBe(`${AGENT_ORIGIN}${JWKS_PATH}`);
     expect(header.kid).toBe(TEST_AGENT_PRIVATE_JWK.kid);
     expect(header.alg).toBe("EdDSA");
@@ -222,7 +222,7 @@ describe("discovery routes", () => {
   });
 });
 
-describe("gateway authentication", () => {
+describe("gatekeeper authentication", () => {
   it("refuses a call with no bearer token", async () => {
     const res = await worker(post(sendMessage({})), env);
 
@@ -230,21 +230,23 @@ describe("gateway authentication", () => {
     expect(res.headers.get("www-authenticate")).toContain("invalid_token");
   });
 
-  it("refuses a token from an origin outside GATEWAY_ORIGINS", async () => {
-    const token = await makeGatewayToken();
+  it("refuses a token from an origin outside GATEKEEPER_ORIGINS", async () => {
+    const token = await makeGatekeeperToken();
     const res = await worker(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
-      { ...env, GATEWAY_ORIGINS: JSON.stringify(["https://other.test"]) }
+      { ...env, GATEKEEPER_ORIGINS: JSON.stringify(["https://other.test"]) }
     );
 
     expect(res.status).toBe(401);
-    expect(await res.text()).toMatch(/not in the allowed gateway origins/);
+    expect(await res.text()).toMatch(/not in the allowed gatekeeper origins/);
   });
 
   it("refuses a verified token that carries no identity key", async () => {
     // Without it the executor cannot route to a DO instance. Refusing beats
     // falling back to a shared instance, which would cross callers' tasks.
-    const token = await makeGatewayToken({ identity: { name: "anonymous" } });
+    const token = await makeGatekeeperToken({
+      identity: { name: "anonymous" }
+    });
     const res = await worker(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
       env
@@ -316,7 +318,7 @@ describe("startup validation", () => {
  *
  * Both are one-shot: a Worker that reads the wrong binding or demands the wrong
  * audience fails on its first real call, and both failures reach the operator as
- * a 401 that looks like the gateway's fault. Neither has a cheap runtime signal,
+ * a 401 that looks like the gatekeeper's fault. Neither has a cheap runtime signal,
  * so the coverage has to be here.
  */
 describe("worker-level configuration", () => {
@@ -328,12 +330,12 @@ describe("worker-level configuration", () => {
    */
   interface RenamedEnv {
     AGENT_KEY: string;
-    ALLOWED_GATEWAYS: string;
+    ALLOWED_GATEKEEPERS: string;
   }
 
   const renamedEnv: RenamedEnv = {
     AGENT_KEY: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
-    ALLOWED_GATEWAYS: JSON.stringify([GATEWAY_ORIGIN])
+    ALLOWED_GATEKEEPERS: JSON.stringify([GATEKEEPER_ORIGIN])
   };
 
   const renamed = createA2AWorker<RenamedEnv>({
@@ -341,7 +343,7 @@ describe("worker-level configuration", () => {
     tenants: { [TEST_TENANT]: tenantAgent("worker-spec-agent") },
     secrets: (e) => ({
       signingKey: e.AGENT_KEY,
-      gatewayOrigins: e.ALLOWED_GATEWAYS
+      gatekeeperOrigins: e.ALLOWED_GATEKEEPERS
     })
   });
 
@@ -358,43 +360,46 @@ describe("worker-level configuration", () => {
   });
 
   it("verifies against the allowlist the secrets reader selected", async () => {
-    const token = await makeGatewayToken({ identity: { name: "anonymous" } });
+    const token = await makeGatekeeperToken({
+      identity: { name: "anonymous" }
+    });
     const res = await renamed(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
       renamedEnv
     );
 
-    // 400, not 401: the token verified against `ALLOWED_GATEWAYS` and died one
+    // 400, not 401: the token verified against `ALLOWED_GATEKEEPERS` and died one
     // step later on the keyless identity. A 401 would mean the reader never
     // supplied the allowlist and every caller was refused identically.
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/identity missing key/);
   });
 
-  it("refuses a gateway outside the selected allowlist", async () => {
-    const token = await makeGatewayToken();
+  it("refuses a gatekeeper outside the selected allowlist", async () => {
+    const token = await makeGatekeeperToken();
     const res = await renamed(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
       {
         ...renamedEnv,
-        ALLOWED_GATEWAYS: JSON.stringify(["https://other.test"])
+        ALLOWED_GATEKEEPERS: JSON.stringify(["https://other.test"])
       }
     );
 
     expect(res.status).toBe(401);
-    expect(await res.text()).toMatch(/not in the allowed gateway origins/);
+    expect(await res.text()).toMatch(/not in the allowed gatekeeper origins/);
   });
 
   /**
    * The audience override, both branches.
    *
    * The audience is a two-sided contract — whatever is required here has to be
-   * exactly what the gateway mints — so the load-bearing assertion is that
+   * exactly what the gatekeeper mints — so the load-bearing assertion is that
    * setting it *stops* accepting the default. An override that were quietly
    * ignored would still pass every "accepts the right token" test, because the
    * default endpoint audience is what the tests mint by default.
    */
-  const OVERRIDE_AUDIENCE = "https://gateway.test/minted-for-this-deployment";
+  const OVERRIDE_AUDIENCE =
+    "https://gatekeeper.test/minted-for-this-deployment";
 
   const overridden = createA2AWorker({
     manifest: hostManifest,
@@ -403,7 +408,7 @@ describe("worker-level configuration", () => {
   });
 
   it("rejects the default endpoint audience once an override is set", async () => {
-    const token = await makeGatewayToken(); // the default `${origin}/a2a`
+    const token = await makeGatekeeperToken(); // the default `${origin}/a2a`
     const res = await overridden(
       post(sendMessage({}), { authorization: `Bearer ${token}` }),
       env
@@ -413,7 +418,7 @@ describe("worker-level configuration", () => {
   });
 
   it("accepts a token minted for the overridden audience", async () => {
-    const token = await makeGatewayToken({
+    const token = await makeGatekeeperToken({
       audience: OVERRIDE_AUDIENCE,
       identity: { name: "anonymous" }
     });
@@ -440,7 +445,7 @@ describe("worker-level configuration", () => {
       }
     });
 
-    const token = await makeGatewayToken({
+    const token = await makeGatekeeperToken({
       audience: `${AGENT_ORIGIN}/from-callback`,
       identity: { name: "anonymous" }
     });
@@ -470,7 +475,7 @@ describe("tenant routing", () => {
   it("refuses a request that names no tenant", async () => {
     // No default agent: picking one would mean serving a caller an agent it
     // never asked for.
-    const token = await makeGatewayToken();
+    const token = await makeGatekeeperToken();
     const res = await call(
       { jsonrpc: "2.0", id: 7, method: "SendMessage", params: {} },
       token
@@ -483,7 +488,7 @@ describe("tenant routing", () => {
   });
 
   it("refuses a tenant no agent is registered under", async () => {
-    const token = await makeGatewayToken({ tenant: "ghost" });
+    const token = await makeGatekeeperToken({ tenant: "ghost" });
     const res = await call(sendMessage({}, "ghost"), token);
     const body = await res.json<{ error: { message: string } }>();
 
@@ -499,9 +504,9 @@ describe("tenant routing", () => {
       // reaches past the guard and dies reading `.manifest` off it: a 500 in
       // place of the 400 this names.
       //
-      // Reachable without a hostile gateway. A tenant id is whatever an agent
+      // Reachable without a hostile gatekeeper. A tenant id is whatever an agent
       // was registered under, and `constructor` is a plausible name.
-      const token = await makeGatewayToken({ tenant: name });
+      const token = await makeGatekeeperToken({ tenant: name });
       const res = await call(sendMessage({}, name), token);
       const body = await res.json<{ error: { message: string } }>();
 
@@ -511,11 +516,11 @@ describe("tenant routing", () => {
 
   it("refuses a token minted for a sibling tenant", async () => {
     // The replay this design has to stop. The token is entirely valid — right
-    // gateway, right signature, right audience, and the audience *cannot*
+    // gatekeeper, right signature, right audience, and the audience *cannot*
     // distinguish siblings because they share one endpoint. Only the tenant
     // claim separates them, so if this ever returns anything but 401, one agent
     // can spend another's token by editing a field in the request body.
-    const token = await makeGatewayToken({ tenant: "sibling" });
+    const token = await makeGatekeeperToken({ tenant: "sibling" });
     const res = await call(sendMessage({}, TEST_TENANT), token);
 
     expect(res.status).toBe(401);
@@ -523,9 +528,9 @@ describe("tenant routing", () => {
   });
 
   it("refuses a token carrying no tenant claim at all", async () => {
-    // A gateway too old to scope its tokens. Treating an absent claim as a
+    // A gatekeeper too old to scope its tokens. Treating an absent claim as a
     // wildcard would silently reopen the replay above for every such caller.
-    const token = await makeGatewayToken({ tenant: "" });
+    const token = await makeGatekeeperToken({ tenant: "" });
     const res = await call(sendMessage({}, TEST_TENANT), token);
 
     expect(res.status).toBe(401);
@@ -533,7 +538,9 @@ describe("tenant routing", () => {
   });
 
   it("accepts a token whose tenant matches the one addressed", async () => {
-    const token = await makeGatewayToken({ identity: { name: "anonymous" } });
+    const token = await makeGatekeeperToken({
+      identity: { name: "anonymous" }
+    });
     const res = await call(sendMessage({}, TEST_TENANT), token);
 
     // 400, not 401: the token verified and the tenant matched, so the call died
@@ -545,7 +552,7 @@ describe("tenant routing", () => {
 });
 
 describe("claim-name overrides", () => {
-  // For a deployment fronted by something other than looping-gateway, which
+  // For a deployment fronted by something other than slack-gatekeeper, which
   // names these claims in its own namespace.
   const identityClaim = "https://elsewhere.test/identity";
   const tenantClaim = "https://elsewhere.test/tenant";
@@ -561,7 +568,7 @@ describe("claim-name overrides", () => {
     renamedClaims(post(body, { authorization: `Bearer ${token}` }), env);
 
   it("reads both claims from the configured names", async () => {
-    const token = await makeGatewayToken({ identityClaim, tenantClaim });
+    const token = await makeGatekeeperToken({ identityClaim, tenantClaim });
     const res = await renamedClaims(
       post(
         sendMessage({
@@ -584,7 +591,7 @@ describe("claim-name overrides", () => {
     // that check sits past *both* claim reads: getting here means the identity
     // was found under its configured name (an unread identity has no key, which
     // 400s first) and the tenant matched under its own. A 401 is the tenant
-    // claim not reaching `verifyGatewayToken` — it falls back to the Looping
+    // claim not reaching `verifyGatekeeperToken` — it falls back to the default
     // name, finds nothing, and refuses a legitimate call as carrying no tenant.
     expect(res.status).toBe(200);
     expect(body.error.message).toMatch(/taskPushNotificationConfig/);
@@ -592,13 +599,13 @@ describe("claim-name overrides", () => {
 
   it("refuses a token naming the tenant under the default claim", async () => {
     // The override moves the name rather than adding an alternative: this token
-    // carries a perfectly good tenant, just under the Looping name this worker
+    // carries a perfectly good tenant, just under the Dynamic Agents name this worker
     // was configured away from. Accepting it would mean a renamed deployment
     // still honours whatever the default namespace says.
     //
     // The identity claim is minted at the configured name on purpose, so the
     // keyless-identity 400 cannot mask what this is asserting.
-    const token = await makeGatewayToken({ identityClaim });
+    const token = await makeGatekeeperToken({ identityClaim });
     const res = await call(sendMessage({}, TEST_TENANT), token);
 
     expect(res.status).toBe(401);
@@ -608,7 +615,7 @@ describe("claim-name overrides", () => {
 
 describe("GetExtendedAgentCard", () => {
   const getCard = async (tenant: string, tokenTenant = tenant) => {
-    const token = await makeGatewayToken({ tenant: tokenTenant });
+    const token = await makeGatekeeperToken({ tenant: tokenTenant });
     return worker(
       post(
         {
@@ -628,7 +635,7 @@ describe("GetExtendedAgentCard", () => {
 
   it("returns the addressed tenant's own signed card", async () => {
     // The only way to get a tenant's card, since the well-known path serves the
-    // stub. A gateway registering an agent pins the key from exactly this.
+    // stub. A gatekeeper registering an agent pins the key from exactly this.
     const res = await getCard(TEST_TENANT);
     const body = await res.json<{
       result: {
@@ -666,7 +673,7 @@ describe("GetExtendedAgentCard", () => {
     // `advertiseSecuritySchemes` is on here deliberately, and this spec is
     // close to worthless without it: `securitySchemes` is the card's only
     // protobuf *oneof*, and the second encode is what collapses
-    // `{ gatewayJwt: { httpAuthSecurityScheme: … } }` to `{ gatewayJwt: {} }`.
+    // `{ gatekeeperJwt: { httpAuthSecurityScheme: … } }` to `{ gatekeeperJwt: {} }`.
     // With schemes off — the default — encoding twice is a no-op and this
     // passes against the broken implementation too.
     const advertising = createA2AWorker({
@@ -684,7 +691,7 @@ describe("GetExtendedAgentCard", () => {
           params: { tenant: TEST_TENANT }
         },
         {
-          authorization: `Bearer ${await makeGatewayToken()}`,
+          authorization: `Bearer ${await makeGatekeeperToken()}`,
           "A2A-Version": A2A_PROTOCOL_VERSION
         }
       ),
@@ -695,10 +702,10 @@ describe("GetExtendedAgentCard", () => {
     // The scheme survived the round trip at all — if this collapsed, the
     // signature check below would fail for a reason worth naming separately.
     expect(result.securitySchemes).toMatchObject({
-      gatewayJwt: { httpAuthSecurityScheme: { scheme: "bearer" } }
+      gatekeeperJwt: { httpAuthSecurityScheme: { scheme: "bearer" } }
     });
 
-    // Verified exactly as looping-gateway does: decode what arrived, re-encode,
+    // Verified exactly as slack-gatekeeper does: decode what arrived, re-encode,
     // check the detached JWS. Rejects if the served document is not the one
     // that was signed.
     const { d: _d, ...publicJwk } = TEST_AGENT_PRIVATE_JWK;
@@ -721,7 +728,7 @@ describe("the accept-and-notify contract", () => {
   const authed = async (params: object) =>
     worker(
       post(sendMessage(params), {
-        authorization: `Bearer ${await makeGatewayToken()}`,
+        authorization: `Bearer ${await makeGatekeeperToken()}`,
         "A2A-Version": A2A_PROTOCOL_VERSION
       }),
       env
@@ -748,7 +755,7 @@ describe("the accept-and-notify contract", () => {
     const res = await authed({
       request: { message },
       configuration: {
-        taskPushNotificationConfig: { url: "https://gateway.test/cb" }
+        taskPushNotificationConfig: { url: "https://gatekeeper.test/cb" }
       }
     });
     const body = await res.json<{ error: { message: string } }>();
@@ -782,7 +789,7 @@ describe("the accept-and-notify contract", () => {
 
     const res = await inline(
       post(sendMessage({ request: { message } }), {
-        authorization: `Bearer ${await makeGatewayToken()}`,
+        authorization: `Bearer ${await makeGatekeeperToken()}`,
         "A2A-Version": A2A_PROTOCOL_VERSION
       }),
       env
@@ -801,7 +808,7 @@ describe("protocol version negotiation", () => {
     // not advertise — rejected here rather than silently mis-served.
     const res = await worker(
       post(sendMessage({}), {
-        authorization: `Bearer ${await makeGatewayToken()}`
+        authorization: `Bearer ${await makeGatekeeperToken()}`
       }),
       env
     );

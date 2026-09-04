@@ -85,9 +85,9 @@ export function inboundText(message: Message): string {
 
 /**
  * An `agent`-role message carrying one text part, with the proto-required
- * fields this agent never sets filled in. `messageId` is the gateway's dedupe
+ * fields this agent never sets filled in. `messageId` is the gatekeeper's dedupe
  * key, so callers pass a **stable** id (never a fresh random per attempt) — a
- * callback the workflow/DO re-runs must reuse the same id or the gateway
+ * callback the workflow/DO re-runs must reuse the same id or the gatekeeper
  * treats the replay as a new message and double-posts.
  */
 export function agentTextMessage(input: {

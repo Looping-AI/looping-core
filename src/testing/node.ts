@@ -1,7 +1,7 @@
 /**
- * `@loopingai/core/testing/node` — the **Node-realm** half of the VCR harness.
+ * `@dynamicagents/core/testing/node` — the **Node-realm** half of the VCR harness.
  *
- * Separate from `@loopingai/core/testing` because the two halves cannot share a
+ * Separate from `@dynamicagents/core/testing` because the two halves cannot share a
  * module graph. This side reaches `node:fs`; the other side runs inside workerd,
  * which has no filesystem. `vcr-shared.ts` is the only thing both may touch, and
  * it is deliberately dependency-free so it can load in either realm.
@@ -14,7 +14,7 @@
  * import { defineConfig } from "vitest/config";
  * import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
  * import path from "node:path";
- * import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
+ * import { createVcr, recordFromEnv } from "@dynamicagents/core/testing/node";
  *
  * const vcr = createVcr({
  *   snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
@@ -30,7 +30,7 @@
  *       miniflare: { outboundService: vcr.outboundService }
  *     })
  *   ],
- *   test: { globalSetup: ["@loopingai/core/testing/vcr-global-setup"] }
+ *   test: { globalSetup: ["@dynamicagents/core/testing/vcr-global-setup"] }
  * });
  * ```
  *

@@ -50,7 +50,7 @@ describe("what must NOT change the fingerprint", () => {
   it("is unaffected by the host's baseline limits moving", () => {
     // The landmine. `limits: {}` means "inherit the baseline", and it has to
     // hash the same whatever the baseline currently is — otherwise publishing a
-    // patch of @loopingai/core strands every in-flight subagent run.
+    // patch of @dynamicagents/core strands every in-flight subagent run.
     const withEmptyLimits = request({ recipe: recipe({ limits: {} }) });
     const before = canonicalRequest(withEmptyLimits);
 

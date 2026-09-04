@@ -3,7 +3,7 @@
  * Generate the Ed25519 keypair an agent signs its AgentCard with.
  *
  * The private half becomes the `A2A_SIGNING_KEY` secret; the public half is
- * served at the agent's JWKS path and pinned by the gateway on first
+ * served at the agent's JWKS path and pinned by the gatekeeper on first
  * registration (Trust-On-First-Use). No secret is shared in either direction —
  * see `src/a2a/verify.ts` for the other half of the contract.
  *
@@ -11,9 +11,9 @@
  *   node scripts/generate-keys.mjs --kid my-key # choose the key id
  *
  * The `kid` is required, not decorative: it goes in the JWS protected header and
- * is what a gateway pins, so `parsePrivateJwk` refuses a key without one. Rotate
+ * is what a gatekeeper pins, so `parsePrivateJwk` refuses a key without one. Rotate
  * by generating a new key with a *new* kid and serving both public keys until
- * every gateway has re-fetched.
+ * every gatekeeper has re-fetched.
  */
 import { generateKeyPair, exportJWK } from "jose";
 
