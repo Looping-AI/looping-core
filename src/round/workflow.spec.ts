@@ -522,12 +522,12 @@ describe("a failed turn", () => {
       ...deps(spy),
       failureCopy: (kind) => {
         seen.push(kind);
-        return "ROTATE THE GATEKEEPER TOKEN";
+        return "ROTATE THE AI GATEWAY TOKEN";
       }
     });
 
     expect(seen).toEqual(["gateway-credential"]);
-    expect(JSON.stringify(saved[0])).toContain("ROTATE THE GATEKEEPER TOKEN");
+    expect(JSON.stringify(saved[0])).toContain("ROTATE THE AI GATEWAY TOKEN");
     expect(JSON.stringify(saved[0])).not.toContain(policy.copy.taskFailed);
   });
 

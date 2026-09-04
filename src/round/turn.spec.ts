@@ -314,12 +314,13 @@ describe("runTurn", () => {
   });
 
   /**
-   * The gatekeeper in front of the provider has its own credential, and rejects
-   * with the same 401. Reporting that as `credential` sends an operator to
-   * rotate a Claude token that was never presented to Claude — so the kind has
-   * to survive to the host, which is the only place that knows what to say.
+   * The AI Gateway in front of the provider has its own credential
+   * (`cf-aig-authorization`), and rejects with the same 401. Reporting that as
+   * `credential` sends an operator to rotate a Claude token that was never
+   * presented to Claude — so the kind has to survive to the host, which is the
+   * only place that knows what to say.
    */
-  it("distinguishes a gatekeeper rejection from a provider one", async () => {
+  it("distinguishes an AI Gateway rejection from a provider one", async () => {
     const primary = throwingModel(
       new CredentialRejectedError("401 Unauthorized", {
         status: 401,
