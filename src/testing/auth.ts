@@ -6,17 +6,17 @@ import {
   TENANT_CLAIM,
   endpointUrl,
   jwksUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 import {
-  TEST_GATEWAY_PRIVATE_JWK,
-  GATEWAY_ORIGIN,
+  TEST_GATEKEEPER_PRIVATE_JWK,
+  GATEKEEPER_ORIGIN,
   AGENT_ORIGIN
 } from "./fixtures.js";
 
-export interface GatewayTokenOptions {
+export interface GatekeeperTokenOptions {
   /**
    * Who the token is for. Defaults to an agent at the default RPC path
-   * (`${AGENT_ORIGIN}${A2A_RPC_PATH}`), which is what a gateway mints: the
+   * (`${AGENT_ORIGIN}${A2A_RPC_PATH}`), which is what a gatekeeper mints: the
    * agent's **endpoint**, not its origin.
    *
    * Pass this explicitly when a spec mounts an agent somewhere else — an agent
@@ -44,14 +44,14 @@ export interface GatewayTokenOptions {
   tenantClaim?: string;
 }
 
-/** The tenant `makeGatewayToken` authorizes unless a spec says otherwise. */
+/** The tenant `makeGatekeeperToken` authorizes unless a spec says otherwise. */
 export const TEST_TENANT = "main";
 
-/** Sign a short-lived EdDSA gateway JWT using the test gateway key. */
-export async function makeGatewayToken(
-  options: GatewayTokenOptions = {}
+/** Sign a short-lived EdDSA gatekeeper JWT using the test gatekeeper key. */
+export async function makeGatekeeperToken(
+  options: GatekeeperTokenOptions = {}
 ): Promise<string> {
-  const privateKey = await importJWK(TEST_GATEWAY_PRIVATE_JWK, "EdDSA");
+  const privateKey = await importJWK(TEST_GATEKEEPER_PRIVATE_JWK, "EdDSA");
   const tenant = options.tenant ?? TEST_TENANT;
   return (
     new SignJWT({
@@ -62,20 +62,20 @@ export async function makeGatewayToken(
         workspaceId: 1
       },
       // An empty tenant omits the claim entirely rather than signing `""` — that
-      // is the "gateway too old to scope its tokens" case, and it must be
+      // is the "gatekeeper too old to scope its tokens" case, and it must be
       // rejected rather than treated as a wildcard.
       ...(tenant ? { [options.tenantClaim ?? TENANT_CLAIM]: tenant } : {})
     })
-      // Composed from `@loopingai/a2a-protocol`, the same package the real
-      // gateway mints with. A fixture that agrees with the verifier but not with
+      // Composed from `@dynamicagents/g2a-protocol`, the same package the real
+      // gatekeeper mints with. A fixture that agrees with the verifier but not with
       // the issuer is worse than no fixture: the suite goes green on tokens
       // nothing in production would ever send.
       .setProtectedHeader({
         alg: A2A_JWS_ALG,
-        kid: TEST_GATEWAY_PRIVATE_JWK.kid,
-        jku: jwksUrl(GATEWAY_ORIGIN)
+        kid: TEST_GATEKEEPER_PRIVATE_JWK.kid,
+        jku: jwksUrl(GATEKEEPER_ORIGIN)
       })
-      .setIssuer(options.issuer ?? GATEWAY_ORIGIN)
+      .setIssuer(options.issuer ?? GATEKEEPER_ORIGIN)
       .setAudience(options.audience ?? endpointUrl(AGENT_ORIGIN, A2A_RPC_PATH))
       .setExpirationTime(options.expiresIn ?? "5m")
       .sign(privateKey)

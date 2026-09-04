@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
-import type { GatewayIdentity } from "@loopingai/a2a-protocol";
+import type { GatekeeperIdentity } from "@dynamicagents/g2a-protocol";
 import { resolveConfig } from "../config.js";
 import { TEST_MODELS } from "../testing/fixtures.js";
 import { runHandleTask, type HandleTaskDeps } from "./workflow.js";
@@ -15,7 +15,7 @@ import type { RoundPolicy } from "./policy.js";
  * Every fact here is about *which steps run, in what order, on what verdict* —
  * and none of it is observable from the outside. A canceled task that still
  * posts a `completed` callback looks identical to a healthy one until the
- * gateway shows a reply for work the user abandoned.
+ * gatekeeper shows a reply for work the user abandoned.
  *
  * The `cached` option is what a Workflow replay actually does: serve an
  * already-durable step's recorded result without re-running its body. That is
@@ -27,7 +27,7 @@ import type { RoundPolicy } from "./policy.js";
  * package uncovered; `turn.spec.ts` explains how that happened.
  */
 
-const IDENTITY: GatewayIdentity = {
+const IDENTITY: GatekeeperIdentity = {
   key: "remote:1:test",
   name: "Test",
   kind: "remote",
@@ -134,7 +134,7 @@ function params() {
     contextId: "ctx-1",
     // Unreachable on purpose: a spec that posts here has already failed the
     // assertion it cares about.
-    pushUrl: "https://gateway.invalid/push",
+    pushUrl: "https://gatekeeper.invalid/push",
     pushToken: "push-token",
     jku: "https://agent.invalid/.well-known/jwks.json"
   };
@@ -208,7 +208,7 @@ describe("the ordinary path", () => {
 
   it("still notifies when the sweep fails after its retries are exhausted", async () => {
     // The terminal Task is already durably saved by the time sweep runs, so a
-    // stuck or unreachable cleanup RPC must not strand the gateway without its
+    // stuck or unreachable cleanup RPC must not strand the gatekeeper without its
     // result — logged and skipped, not fatal to `notify`.
     const { stub } = fakeAgent();
     const spy = {
@@ -257,7 +257,7 @@ describe("a Durable Object replaced under a running workflow", () => {
    * failed in under 10ms across 160 seconds of backoff — then `fail:<id>`, the
    * handler that exists to salvage exactly this, failed six more times the same
    * way. The Subtask never reached a terminal row, `deliver` was never reached,
-   * and the gateway received no callback at all.
+   * and the gatekeeper received no callback at all.
    *
    * Every one of those failures was a call on a stub the runtime had already
    * severed. A broken stub does not reconnect; it rejects with the reason it
@@ -400,7 +400,7 @@ describe("a Durable Object replaced under a running workflow", () => {
     // The second, worse half. The chunk fails deterministically, so `fail:<id>`
     // runs — and the eviction lands on *that*. This is the step whose only job
     // is to leave a terminal row behind, so a dead stub here is how a Subtask
-    // ends up permanently non-terminal and the gateway hears nothing.
+    // ends up permanently non-terminal and the gatekeeper hears nothing.
     const { stub, calls } = delegatingAgent({
       chunk: () => {
         throw new Error("recipe exploded");
@@ -522,12 +522,12 @@ describe("a failed turn", () => {
       ...deps(spy),
       failureCopy: (kind) => {
         seen.push(kind);
-        return "ROTATE THE GATEWAY TOKEN";
+        return "ROTATE THE GATEKEEPER TOKEN";
       }
     });
 
     expect(seen).toEqual(["gateway-credential"]);
-    expect(JSON.stringify(saved[0])).toContain("ROTATE THE GATEWAY TOKEN");
+    expect(JSON.stringify(saved[0])).toContain("ROTATE THE GATEKEEPER TOKEN");
     expect(JSON.stringify(saved[0])).not.toContain(policy.copy.taskFailed);
   });
 
@@ -618,7 +618,7 @@ describe("a task abandoned after its retries are exhausted", () => {
    * Worker's code had hung and would never generate a response" record, which is
    * the misleading artefact this recovery exists to remove — and the instance has
    * genuinely finished its job by this point: the Task is terminal and the
-   * gateway has been told.
+   * gatekeeper has been told.
    */
   it("resolves once delivered, so the instance is not recorded as a hang", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -720,7 +720,7 @@ describe("a task abandoned after its retries are exhausted", () => {
  * This is the case the recovery must **not** touch, and the first draft of it
  * did: `notify` exhausts its retries and throws after `complete` durably saved a
  * completed Task, the outer catch treats that as an abandoned turn, and a
- * generic failure is written over a real answer and posted to the gateway. A
+ * generic failure is written over a real answer and posted to the gatekeeper. A
  * turn recorded as failed because a webhook was flaky.
  */
 describe("a turn whose callback fails after the result was saved", () => {

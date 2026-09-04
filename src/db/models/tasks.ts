@@ -102,7 +102,7 @@ export function makeTasks(db: DB) {
   return {
     /**
      * Accept a turn: return the `submitted` task for the given `messageId`,
-     * creating it on first sight. Idempotent on `messageId` (the gateway's
+     * creating it on first sight. Idempotent on `messageId` (the gatekeeper's
      * dedupe key, stable across dispatch retries).
      */
     begin(input: {

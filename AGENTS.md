@@ -1,10 +1,10 @@
-# AGENTS.md — working in `@loopingai/core`
+# AGENTS.md — working in `@dynamicagents/core`
 
-This package is the mandatory floor under every Looping agent. It is consumed by
-[`looping-plugins`](https://github.com/Looping-AI/looping-plugins) (optional,
+This package is the mandatory floor under every Dynamic Agents agent. It is
+consumed by [`plugins`](https://github.com/dynamicagents/plugins) (optional,
 composable capabilities) and
-[`looping-starter`](https://github.com/Looping-AI/looping-starter) (the app that
-composes them).
+[`starter`](https://github.com/dynamicagents/starter) (the app that composes
+them).
 
 Because this is a **published npm package**, most mistakes are invisible in this
 repo and only fail at a consumer's build. The constraints below exist for that
@@ -21,19 +21,19 @@ They are the reason this package exists.
    allowlist → `iss` origin equals `jku` origin → `jwtVerify` pinned to EdDSA —
    are the whole contract. Do not make any of them optional, do not reorder the
    allowlist check after the JWKS fetch, and **do not add a local-development
-   bypass**; run a local gateway instead. `verify.spec.ts` asserts each one
+   bypass**; run a local gatekeeper instead. `verify.spec.ts` asserts each one
    negatively, including that an unlisted `jku` is rejected before any fetch.
 
-2. **EdDSA (Ed25519) only.** Both the gateway JWT and the AgentCard signature.
+2. **EdDSA (Ed25519) only.** Both the gatekeeper JWT and the AgentCard signature.
    Any other algorithm is rejected.
 
-3. **Zero shared secrets, in either direction.** The agent verifies the gateway
-   against the gateway's public JWKS; the gateway verifies the agent against the
+3. **Zero shared secrets, in either direction.** The agent verifies the gatekeeper
+   against the gatekeeper's public JWKS; the gatekeeper verifies the agent against the
    agent's, pinned on first registration (Trust-On-First-Use). Nothing symmetric
    ever crosses the boundary. The only two secrets an agent carries are
-   `A2A_SIGNING_KEY` (its own private JWK) and `GATEWAY_ORIGINS`.
+   `A2A_SIGNING_KEY` (its own private JWK) and `GATEKEEPER_ORIGINS`.
 
-4. **`GATEWAY_ORIGINS` is the allowlist boundary.** Normalized to exact origins,
+4. **`GATEKEEPER_ORIGINS` is the allowlist boundary.** Normalized to exact origins,
    never matched by suffix or pattern. An empty or unparseable value fails loudly
    rather than degrading to an allowlist that rejects everything identically.
 
@@ -55,8 +55,8 @@ follow from that, and all four have already been violated once:
   typechecks extensionless specifiers, but `tsc` emits them verbatim and Node ESM
   then throws `ERR_MODULE_NOT_FOUND` at the consumer.
 
-- **Never mix realms in one module graph.** `@loopingai/core/testing` is the
-  workerd half (may reach `cloudflare:test`); `@loopingai/core/testing/node` and
+- **Never mix realms in one module graph.** `@dynamicagents/core/testing` is the
+  workerd half (may reach `cloudflare:test`); `@dynamicagents/core/testing/node` and
   `/testing/vcr-global-setup` are the Node half (may reach `node:fs`).
   `src/testing/vcr-shared.ts` is the only module both may load, and it must stay
   dependency-free. **No runtime subpath may reach any of them.**
@@ -148,7 +148,7 @@ value, or it reintroduces the step-timeout kill invisibly, from inside a plugin.
 The old rule was "core ships no loop." That was the right instinct at the wrong
 granularity, and 0.4.0 sharpens it: **core ships no prompt copy and no policy.**
 
-`@loopingai/core/round` now ships the whole delegating loop — concurrent subtask
+`@dynamicagents/core/round` now ships the whole delegating loop — concurrent subtask
 execution, chunked subagent runs, cancellation ordering, the
 primary→fallback→repair ladder. Keeping that out of core did not make agents more
 expressive; it made every consumer fork ~2,700 lines of durable-execution logic
@@ -164,7 +164,7 @@ What is genuinely per-agent is now explicit and mandatory:
   user-facing strings. Nothing has a default. A lent-out round contract is exactly
   the house prompt copy `validateRecipe` already refuses for a subagent soul.
 - **The loop itself, if you want a different one.** `/round` is opt-in and its own
-  subpath. An agent whose turn is a single inference extends `LoopingAgent` from
+  subpath. An agent whose turn is a single inference extends `DynamicAgent` from
   `/host`, writes its own loop, and carries none of the delegation machinery.
 
 So when adding to `/round` or `/host`, the test is not "does an agent vary here"
@@ -201,14 +201,14 @@ Three rules follow, and they are what keep a third provider cheap:
   an agent never calling it does not pay for it — and **no runtime subpath may
   import such a subpath.** `/anthropic` was the one worked example until 0.8.0,
   when it was removed with the only deployment that used it.
-- **`LoopingAgent.modelRuntime` and `RecipeSubagentHost.modelRuntime` are
+- **`DynamicAgent.modelRuntime` and `RecipeSubagentHost.modelRuntime` are
   overridden together.** They take identical arguments so one factory can serve
   both. A facet left on the default while its parent runs elsewhere executes
   every delegated subtask on a different model than the round that delegated it,
   and does so silently, because both satisfy `ModelRuntime`. Overriding neither
   is the cheapest way to satisfy this, and what an agent on the default does.
 
-Everything deployment-specific stays out, as everywhere else here: which gateway
+Everything deployment-specific stays out, as everywhere else here: which gatekeeper
 path, which credential, and how to classify a `401` are the agent's to supply,
 from its own `ModelRuntime`. Core recognised one particular intermediary's error
 body once; that is the shape of mistake this section exists to prevent. Two

@@ -8,10 +8,10 @@ import {
 } from "./notify.js";
 
 /**
- * The gateway callback channel for one accepted turn.
+ * The gatekeeper callback channel for one accepted turn.
  *
  * Every agent that accepts asynchronously has to do the same four things with
- * the push config the gateway handed it: sign a callback JWT against the
+ * the push config the gatekeeper handed it: sign a callback JWT against the
  * deployment's card key, POST `working` snapshots as the model reasons, POST the
  * terminal Task, and never let a failed progress post take down a turn. That was
  * written out longhand in four places across two agents in the starter — twice as
@@ -24,7 +24,7 @@ import {
  */
 
 /**
- * Everything needed to call a gateway back about one task.
+ * Everything needed to call a gatekeeper back about one task.
  *
  * RPC-serializable by construction: it crosses the Workflow → Durable Object
  * boundary on every turn, so it holds only strings.
@@ -34,9 +34,9 @@ export interface TurnPushContext {
   taskId: string;
   /** A2A context id, echoed on every callback. */
   contextId: string;
-  /** Gateway push-notification webhook (also the callback JWT `aud`). */
+  /** Gatekeeper push-notification webhook (also the callback JWT `aud`). */
   pushUrl: string;
-  /** Per-task validation token the gateway set; echoed in the callback header. */
+  /** Per-task validation token the gatekeeper set; echoed in the callback header. */
   pushToken: string;
   /** This agent's card-signing JWKS URL — the callback JWT `jku` (pinned key). */
   jku: string;
@@ -48,7 +48,7 @@ export interface PushChannel {
    *
    * **Best-effort**: every failure is logged and swallowed, so a progress post
    * can never abort generation or fail a durable step. The key is what lets the
-   * gateway dedupe a re-posted event on replay, so it must be derived from
+   * gatekeeper dedupe a re-posted event on replay, so it must be derived from
    * position (`r2:step:3`), never from content or a clock.
    */
   working(text: string, key: string): Promise<void>;
@@ -58,7 +58,7 @@ export interface PushChannel {
    *
    * `key` maps a 0-based step ordinal to its notification key. An agent running
    * one turn per task can use the bare index; an agent with rounds **must**
-   * include the round, or two rounds of one task collide on the gateway.
+   * include the round, or two rounds of one task collide on the gatekeeper.
    */
   stream(key: (stepIndex: number) => string): OnContent;
   /**
@@ -75,7 +75,7 @@ export interface PushChannel {
  * `signingKey` is the deployment's Ed25519 private JWK as JSON — `A2A_SIGNING_KEY`
  * by default. There is one per origin, not one per agent: the card sits at a
  * well-known URI, which RFC 8615 defines per-authority, so this origin publishes
- * one card and the gateway pins one key for every agent on it.
+ * one card and the gatekeeper pins one key for every agent on it.
  */
 export function createPushChannel(
   signingKey: string,
@@ -126,7 +126,7 @@ export function createPushChannel(
     async deliver(task) {
       const res = await post(task);
       if (!res.ok) {
-        throw new Error(`gateway notification failed: HTTP ${res.status}`);
+        throw new Error(`gatekeeper notification failed: HTTP ${res.status}`);
       }
     }
   };

@@ -51,7 +51,7 @@ export interface DeliverTerminalOptions {
  * Thrown when a delivery failed *after* its terminal Task was durably saved.
  *
  * The distinction it carries is the difference between "this turn produced
- * nothing" and "this turn produced a result the gateway has not heard about
+ * nothing" and "this turn produced a result the gatekeeper has not heard about
  * yet", and only the first of those is an abandoned task.
  *
  * Without it, an ordinary delivery whose `notify` step exhausted its retries
@@ -74,13 +74,13 @@ export class TaskAlreadyTerminalError extends Error {
 }
 
 /**
- * Persist a turn's terminal Task, then notify the gateway.
+ * Persist a turn's terminal Task, then notify the gatekeeper.
  *
  * **The guarded write is the cancellation check.** `saveTask` refuses to write a
  * terminal state over a `canceled` row and says so, doing that read and write in
  * one synchronous pass inside the Durable Object. Probing first and saving
  * second would leave a window — between the two calls, and again between this
- * step and `notify` — in which a `tasks/cancel` lands and the gateway still
+ * step and `notify` — in which a `tasks/cancel` lands and the gatekeeper still
  * receives a `completed` callback. Keying the notify on "did the write apply"
  * closes it, and that has already been got wrong once.
  *
@@ -102,7 +102,7 @@ export async function deliverTerminalTask(
 
   // Caught, not left to propagate: the terminal Task is already durably saved,
   // so a sweep that still fails once the step's own retries are exhausted must
-  // not block the callback — the gateway is owed its result either way.
+  // not block the callback — the gatekeeper is owed its result either way.
   if (options.sweep) {
     const sweep = options.sweep;
     try {
@@ -118,8 +118,8 @@ export async function deliverTerminalTask(
   }
 
   // A card-key-signed callback POST. Retried by the step on a non-2xx; the
-  // terminal messageId is deterministic and the gateway is idempotent and
-  // single-use, so retries are safe. If it ultimately fails, the gateway's own
+  // terminal messageId is deterministic and the gatekeeper is idempotent and
+  // single-use, so retries are safe. If it ultimately fails, the gatekeeper's own
   // reaction backstop clears the pending marker.
   //
   // Wrapped, because by this line the Task is durably terminal: anything that
@@ -189,7 +189,7 @@ export interface AbandonedTaskOptions {
  *
  * **It resolves after a successful delivery — it does not rethrow.** Rethrowing
  * would reproduce the very "hung Worker" record this exists to remove, and the
- * instance genuinely has finished its job: the Task is terminal and the gateway
+ * instance genuinely has finished its job: the Task is terminal and the gatekeeper
  * has been told.
  *
  * **It rethrows the *original* `cause` when the delivery itself fails.**
@@ -226,7 +226,7 @@ export async function deliverAbandonedTask(
   // Nothing was abandoned: the ordinary delivery already persisted a terminal
   // Task and only its callback failed. Rethrow the fault that actually
   // happened, so the instance still errors exactly as it did before any
-  // recovery existed and the gateway's own backstop clears the pending marker.
+  // recovery existed and the gatekeeper's own backstop clears the pending marker.
   //
   // Checked **here** rather than in each caller's `catch` on purpose. This whole
   // change exists because a recovery every host had to remember to wire was one

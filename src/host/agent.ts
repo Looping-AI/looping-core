@@ -10,7 +10,7 @@ import {
 } from "../config.js";
 import type { A2ASecretsEnv, AiEnv } from "../env.js";
 import { AgentDB, stateOf } from "../db/index.js";
-import type { GatewayIdentity } from "../a2a/verify.js";
+import type { GatekeeperIdentity } from "../a2a/verify.js";
 import { callerContext } from "../a2a/caller.js";
 import type { PlainTask } from "../a2a/task.js";
 import type { TaskListQuery } from "../a2a/agent-stub.js";
@@ -22,7 +22,7 @@ import {
 import { SelfOrigin } from "../a2a/self-origin.js";
 import { buildAgentSession, type SessionLike } from "../agent/session.js";
 import type {
-  GatewayMetadata,
+  AiGatewayMetadata,
   ModelPair,
   ModelRuntime
 } from "../agent/model.js";
@@ -30,7 +30,7 @@ import { workersAIModels } from "../agent/workers-ai/index.js";
 import type { PluginHost } from "./plugin-host.js";
 
 /**
- * The Durable Object body every Looping agent has, whatever loop it runs.
+ * The Durable Object body every Dynamic Agents agent has, whatever loop it runs.
  *
  * ## Why this is core's and not the app's
  *
@@ -44,7 +44,7 @@ import type { PluginHost } from "./plugin-host.js";
  * They did not stay identical. The second copy dropped `markWorking`'s
  * cancellation verdict on the floor and probed with a separate `getTask` before
  * writing a terminal Task — so a canceled task still burned a model call, and the
- * gateway could still receive a `completed` callback for a task the caller had
+ * gatekeeper could still receive a `completed` callback for a task the caller had
  * abandoned. Both are lifecycle invariants, both were documented in the first
  * copy, and neither is visible to a type checker or a linter.
  *
@@ -57,19 +57,19 @@ import type { PluginHost } from "./plugin-host.js";
  * ## The three seams
  *
  * ```ts
- * export class MyAgent extends LoopingAgent<Env> {
+ * export class MyAgent extends DynamicAgent<Env> {
  *   protected agentConfig() { return MY_CONFIG; }
  *   protected agentPlugins(host: PluginHost<Env>) { return plugins(host); }
  *   protected agentSoul(capabilities: string) { return soulPrompt(capabilities); }
  * }
  * ```
  *
- * One Durable Object instance per verified caller (keyed by the gateway JWT's
+ * One Durable Object instance per verified caller (keyed by the gatekeeper JWT's
  * `identity.key`), each owning **one continuous Session** — durable history plus
  * a self-edited `memory` block, backed by `this.sql`. All of a caller's turns, in
  * any channel or thread, accumulate into that one conversation.
  */
-export abstract class LoopingAgent<
+export abstract class DynamicAgent<
   TEnv extends Cloudflare.Env & AiEnv & A2ASecretsEnv = Cloudflare.Env &
     AiEnv &
     A2ASecretsEnv
@@ -253,11 +253,11 @@ export abstract class LoopingAgent<
 
   /**
    * The main agent's primary/fallback pair. With `metadata` it builds a fresh
-   * pair carrying that AI Gateway correlation tag (so a gateway log ties the call
+   * pair carrying that AI Gateway correlation tag (so an AI Gateway log ties the call
    * to its task and round); without it — the Session's own compaction model — it
    * reuses a memoized default. A test `modelsOverride` always wins.
    */
-  protected modelPair(metadata?: GatewayMetadata): ModelPair {
+  protected modelPair(metadata?: AiGatewayMetadata): ModelPair {
     if (this.modelsOverride) return this.modelsOverride;
     if (!metadata) return (this._pair ??= this.models.createModelPair());
     return this.models.createModelPair({ metadata });
@@ -272,7 +272,7 @@ export abstract class LoopingAgent<
    * messages a compaction folds away: core performs the compaction, so core
    * announces the loss, and the runtime fans it out to every plugin that asked.
    */
-  getSession(identity: GatewayIdentity): SessionLike {
+  getSession(identity: GatekeeperIdentity): SessionLike {
     this.identityKey ??= identity.key ?? undefined;
     const { session, model } = this.config;
     return (this.session ??= buildAgentSession(
@@ -361,7 +361,7 @@ export abstract class LoopingAgent<
     return this.selfOriginMemo.require();
   }
 
-  /** The gateway callback channel for one turn. See {@link PushChannel}. */
+  /** The gatekeeper callback channel for one turn. See {@link PushChannel}. */
   protected push(context: TurnPushContext): PushChannel {
     this.noteSelfOrigin(context.jku);
     return createPushChannel(this.env.A2A_SIGNING_KEY, context);
@@ -374,7 +374,7 @@ export abstract class LoopingAgent<
    * — see {@link callerContext}. Override it to name what a workspace id means in
    * your deployment; do not use it to say who the *user* is, which this is not.
    */
-  protected callerContext(identity: GatewayIdentity): string {
+  protected callerContext(identity: GatekeeperIdentity): string {
     return callerContext(identity);
   }
 
@@ -415,7 +415,7 @@ export abstract class LoopingAgent<
    * does that read and write in one synchronous pass inside the DO. Probing with
    * {@link getTask} first and saving second leaves a window — between the two
    * calls, and again between the save and the notify — in which a cancel lands
-   * and the gateway still receives a `completed` callback.
+   * and the gatekeeper still receives a `completed` callback.
    *
    * A `canceled` state routes to {@link markCanceled} instead of a plain write,
    * so a `tasks/cancel` arriving through the a2a-js TaskStore and one arriving

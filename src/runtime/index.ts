@@ -179,7 +179,7 @@ export function createAgentRuntime(
     if (plugin.contractVersion !== PLUGIN_CONTRACT_VERSION) {
       throw new RuntimeSetupError(
         `plugin "${plugin.key}" was built against plugin contract v${plugin.contractVersion}, ` +
-          `but this @loopingai/core speaks v${PLUGIN_CONTRACT_VERSION}. ` +
+          `but this @dynamicagents/core speaks v${PLUGIN_CONTRACT_VERSION}. ` +
           "Upgrade whichever of the two is behind — they publish from separate repos, " +
           "so a version train can leave one lagging."
       );

@@ -95,7 +95,7 @@ export const CHUNK_SOFT_MS = 15 * 60_000;
  *
  * A host installing a tool that can block (a shell, a container command, a fetch
  * with no ceiling of its own) must bound it at or below this. See the `timeoutMs`
- * passed to `@loopingai/plugins/computer` in looping-starter.
+ * passed to `@dynamicagents/plugins/computer` in starter.
  */
 export const MAX_TOOL_CALL_MS = 10 * 60_000;
 

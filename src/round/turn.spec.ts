@@ -29,7 +29,7 @@ import type { RoundPolicy } from "./policy.js";
  *
  * ## Why this file is here
  *
- * These assertions lived in looping-starter, back when the loop itself did.
+ * These assertions lived in starter, back when the loop itself did.
  * Moving the loop into core deleted them and re-landed nothing, so the entire
  * primary→fallback→repair ladder shipped from a published package with no
  * coverage at all — and the suite stayed green throughout, because the tests
@@ -314,12 +314,12 @@ describe("runTurn", () => {
   });
 
   /**
-   * The gateway in front of the provider has its own credential, and rejects
+   * The gatekeeper in front of the provider has its own credential, and rejects
    * with the same 401. Reporting that as `credential` sends an operator to
    * rotate a Claude token that was never presented to Claude — so the kind has
    * to survive to the host, which is the only place that knows what to say.
    */
-  it("distinguishes a gateway rejection from a provider one", async () => {
+  it("distinguishes a gatekeeper rejection from a provider one", async () => {
     const primary = throwingModel(
       new CredentialRejectedError("401 Unauthorized", {
         status: 401,

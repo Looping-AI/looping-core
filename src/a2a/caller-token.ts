@@ -4,7 +4,7 @@ import {
   IDENTITY_CLAIM,
   TENANT_CLAIM,
   jwksUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 import { parsePrivateJwk } from "./card.js";
 
 /** Default lifetime: long enough for clock skew, short enough to be worthless from a log. */
@@ -67,7 +67,7 @@ async function signingKeyFor(
  * Sign a short-lived token identifying **this agent as a caller** to another
  * service that trusts its card key.
  *
- * The production sibling of `makeGatewayToken`, which core previously shipped
+ * The production sibling of `makeGatekeeperToken`, which core previously shipped
  * only from `/testing` — so an agent that had to call out mint-signed had to
  * hand-write this shape, and every deployment that did so wrote its own subtly
  * different version of the `iss`/`jku` agreement above.

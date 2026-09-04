@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core/agent` — the primitives a loop is built from.
+ * `@dynamicagents/core/agent` — the primitives a loop is built from.
  *
  * The session, the model pair with its fallback, the budget, and the
  * control-tool abstraction that turns "the model called something that ends the
@@ -8,9 +8,9 @@
  *
  * This subpath ships **no loop** — that is what makes it importable by one. A
  * loop module needs these primitives without also pulling in a Durable Object
- * base class and drizzle, which is why `LoopingAgent` lives in
- * `@loopingai/core/host` and the delegating round loop in
- * `@loopingai/core/round`.
+ * base class and drizzle, which is why `DynamicAgent` lives in
+ * `@dynamicagents/core/host` and the delegating round loop in
+ * `@dynamicagents/core/round`.
  *
  * Core as a whole *does* now ship a loop, opt-in, in `/round`. The rule it
  * still keeps is narrower and better: **core ships no prompt copy and no
@@ -22,7 +22,7 @@
 export { newTurnBudget, stepAllowance, type TurnBudget } from "./budget.js";
 
 export {
-  type GatewayMetadata,
+  type AiGatewayMetadata,
   type ModelOverrides,
   type ModelPair,
   type ModelRuntime,

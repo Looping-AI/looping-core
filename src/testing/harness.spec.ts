@@ -6,7 +6,7 @@ import {
   IDENTITY_CLAIM,
   TENANT_CLAIM,
   endpointUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 import { createA2AWorker } from "../worker/index.js";
 import type { AgentManifest } from "../a2a/card.js";
 import type { A2ASecretsEnv } from "../env.js";
@@ -20,7 +20,7 @@ import { createAgentHarness } from "./harness.js";
 import { TEST_TENANT } from "./auth.js";
 import {
   AGENT_ORIGIN,
-  GATEWAY_ORIGIN,
+  GATEKEEPER_ORIGIN,
   TEST_AGENT_PRIVATE_JWK
 } from "./fixtures.js";
 
@@ -56,7 +56,7 @@ interface TestEnv extends A2ASecretsEnv {
 
 const env: TestEnv = {
   A2A_SIGNING_KEY: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
-  GATEWAY_ORIGINS: GATEWAY_ORIGIN
+  GATEKEEPER_ORIGINS: GATEKEEPER_ORIGIN
 };
 
 /** Accepted turns, so a spec can read what the edge actually forwarded. */
@@ -101,7 +101,7 @@ const worker = { fetch: handler };
 describe("createAgentHarness", () => {
   it("mints a token the edge accepts, and gets back a submitted Task", async () => {
     const harness = createAgentHarness({ worker, env, tenant: TEST_TENANT });
-    using _ = harness.interceptGateway();
+    using _ = harness.interceptGatekeeper();
 
     const task = await harness.send("what's the weather?");
 
@@ -143,7 +143,7 @@ describe("createAgentHarness", () => {
     // Proves the scoping above is load-bearing rather than decorative: the
     // harness can mint a mismatched token, and the edge must refuse it.
     const harness = createAgentHarness({ worker, env, tenant: TEST_TENANT });
-    using _ = harness.interceptGateway();
+    using _ = harness.interceptGatekeeper();
 
     const res = await harness.rpc(
       {
@@ -172,15 +172,15 @@ describe("createAgentHarness", () => {
     expect(await res.text()).toMatch(/tenant|unauthoriz/i);
   });
 
-  it("serves the gateway JWKS and 404s anything else", async () => {
+  it("serves the gatekeeper JWKS and 404s anything else", async () => {
     // The third. Without the JWKS reachable, every token fails to verify and
     // every spec below it reports a 401 that has nothing to do with its subject.
     // The 404 is deliberate: an unexpected outbound call fails loudly instead of
     // hanging or escaping the isolate.
     const harness = createAgentHarness({ worker, env, tenant: TEST_TENANT });
-    using _ = harness.interceptGateway();
+    using _ = harness.interceptGatekeeper();
 
-    const jwks = await fetch(`${GATEWAY_ORIGIN}/.well-known/jwks.json`);
+    const jwks = await fetch(`${GATEKEEPER_ORIGIN}/.well-known/jwks.json`);
     expect(jwks.ok).toBe(true);
     expect(await jwks.json()).toHaveProperty("keys");
 
@@ -197,7 +197,7 @@ describe("createAgentHarness", () => {
     // exact producer the round workflow uses. Hand-rolling the shape here would
     // test the harness against a message no agent actually sends.
     const harness = createAgentHarness({ worker, env, tenant: TEST_TENANT });
-    using _ = harness.interceptGateway();
+    using _ = harness.interceptGatekeeper();
 
     const task = await harness.send("hello");
     const terminal = buildCompletedTask(task.id, task.contextId, "the reply");
@@ -236,7 +236,7 @@ describe("createAgentHarness", () => {
     const before = globalThis.fetch;
     {
       const harness = createAgentHarness({ worker, env, tenant: TEST_TENANT });
-      using _ = harness.interceptGateway();
+      using _ = harness.interceptGatekeeper();
       expect(globalThis.fetch).not.toBe(before);
     }
     expect(globalThis.fetch).toBe(before);

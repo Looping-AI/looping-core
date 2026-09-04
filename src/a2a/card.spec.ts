@@ -34,7 +34,7 @@ import { AGENT_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "../testing/fixtures.js";
  * **Under the pinned `@a2a-js/sdk` (1.0.1) it no longer breaks.** The specs below
  * pin the property in the positive for *both* settings — schemes omitted and
  * schemes advertised — and additionally that an advertised-schemes signature
- * survives the double decode `looping-gateway`'s `canonicalCardPayload` performs.
+ * survives the double decode `slack-gatekeeper`'s `canonicalCardPayload` performs.
  * So these tests now serve two purposes: they guard the fixed point, and they are
  * the evidence for flipping the default. If a later SDK regresses the oneof, the
  * advertised-schemes cases fail and the default must stay where it is.
@@ -77,7 +77,7 @@ describe("AgentCard fixed point", () => {
     // must not quietly turn the card into an open endpoint.
     const card = buildBaseCard(manifest, { origin: AGENT_ORIGIN });
     expect(card.securityRequirements).toEqual([
-      { schemes: { gatewayJwt: { list: [] } } }
+      { schemes: { gatekeeperJwt: { list: [] } } }
     ]);
     expect(card.securitySchemes).toEqual({});
 
@@ -101,7 +101,7 @@ describe("AgentCard fixed point", () => {
     ) as { securitySchemes?: Record<string, unknown> };
 
     // `description: ""` is absent: the wire encoding omits protobuf defaults.
-    expect(wire.securitySchemes?.gatewayJwt).toEqual({
+    expect(wire.securitySchemes?.gatekeeperJwt).toEqual({
       httpAuthSecurityScheme: { scheme: "bearer", bearerFormat: "JWT" }
     });
 
@@ -111,7 +111,7 @@ describe("AgentCard fixed point", () => {
   });
 
   it("keeps an advertised-schemes signature valid through a double-decoding verifier", async () => {
-    // The concrete hazard `card.ts` warns about: looping-gateway's
+    // The concrete hazard `card.ts` warns about: slack-gatekeeper's
     // `canonicalCardPayload` decodes a card it already holds typed. Even that
     // now verifies, so nothing on either side is blocking the flip.
     const card = buildBaseCard(manifest, {
@@ -173,7 +173,7 @@ describe("signCard", () => {
     expect(Array.isArray(signed.signatures)).toBe(true);
     expect((signed.signatures as unknown[]).length).toBe(1);
 
-    // The gateway's side of Trust-On-First-Use: look the key up by the `kid`
+    // The gatekeeper's side of Trust-On-First-Use: look the key up by the `kid`
     // in the protected header, then verify.
     const { keys } = publicCardJwks(TEST_AGENT_PRIVATE_JWK);
     const verifier = verifyAgentCardSignature(async (kid) => {
@@ -220,7 +220,7 @@ describe("signCard", () => {
 
 describe("key handling", () => {
   it("refuses a signing key with no kid", () => {
-    // `kid` is required in the JWS protected header and is what the gateway
+    // `kid` is required in the JWS protected header and is what the gatekeeper
     // pins on first registration; a key without one fails late and confusingly.
     const { kid: _kid, ...noKid } = TEST_AGENT_PRIVATE_JWK;
     void _kid;

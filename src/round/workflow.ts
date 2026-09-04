@@ -8,7 +8,7 @@ import type { CoreConfig } from "../config.js";
 import { buildCompletedTask, buildFailedTask } from "../a2a/notify.js";
 import type { TurnPushContext } from "../a2a/push.js";
 import { deliverAbandonedTask, deliverTerminalTask } from "../a2a/deliver.js";
-import type { GatewayIdentity } from "../a2a/verify.js";
+import type { GatekeeperIdentity } from "../a2a/verify.js";
 import type { RoundFailureKind } from "../agent/inference.js";
 import type { SubtaskId } from "../subtasks/types.js";
 import type { RoundAgentBase } from "./agent.js";
@@ -16,10 +16,10 @@ import type { RoundPolicy } from "./policy.js";
 import type { RoundMode } from "./turn.js";
 
 /**
- * The async task controller. The gateway does not wait for a synchronous reply:
+ * The async task controller. The gatekeeper does not wait for a synchronous reply:
  * the Worker accepts a turn (returns a `submitted` Task) and hands the actual work
  * to this durable Workflow, which orchestrates it end to end and delivers the
- * reply to the gateway's push-notification webhook.
+ * reply to the gatekeeper's push-notification webhook.
  *
  * The shape is a **round loop**, not a fixed sequence of phases:
  *
@@ -47,24 +47,24 @@ import type { RoundMode } from "./turn.js";
  * directly, so: the task inputs travel as the workflow **payload**, and the agent
  * runtime plus task state are reached only through **native DO RPC**.
  *
- * Idempotency: the instance id is derived from the gateway's `messageId`
+ * Idempotency: the instance id is derived from the gatekeeper's `messageId`
  * (deterministic across dispatch retries), so a re-dispatch never starts a second
  * run. Within a run, every step is re-runnable: the Subtask rows and the Session
  * are the source of truth, and each round recovers from them rather than
  * re-inferring.
  */
 export interface HandleTaskParams {
-  /** The accepted task id (echoed back to the gateway on the callback). */
+  /** The accepted task id (echoed back to the gatekeeper on the callback). */
   taskId: string;
   /** The user turn text to answer. */
   text: string;
-  /** The verified calling gateway-agent identity (keys the DO + the Session). */
-  identity: GatewayIdentity;
+  /** The verified calling gatekeeper-agent identity (keys the DO + the Session). */
+  identity: GatekeeperIdentity;
   /** A2A context id, echoed on the completed Task. */
   contextId: string;
-  /** Gateway push-notification webhook (also the callback JWT `aud`). */
+  /** Gatekeeper push-notification webhook (also the callback JWT `aud`). */
   pushUrl: string;
-  /** Per-task validation token the gateway set; echoed in the callback header. */
+  /** Per-task validation token the gatekeeper set; echoed in the callback header. */
   pushToken: string;
   /** This agent's card-signing JWKS URL — the callback JWT `jku` (pinned key). */
   jku: string;
@@ -86,7 +86,7 @@ export interface HandleTaskDeps {
    * pure lookup — a namespace `get`, nothing cached and nothing awaited. See
    * {@link ResolveAgent} for why the result must never be hoisted.
    */
-  resolveAgent: (identity: GatewayIdentity) => AgentStub;
+  resolveAgent: (identity: GatekeeperIdentity) => AgentStub;
   /** Resolved config — the loop reads `mainAgentLimits` and `maxSubtasks`. */
   config: CoreConfig;
   /** The user-facing copy. Only `copy.taskFailed` is read out here. */
@@ -153,7 +153,7 @@ type AgentStub = DurableObjectStub<RoundAgentBase>;
  * `executeSubtaskChunk`; the five retries that followed each failed in under
  * 10ms across 160 seconds of backoff, and then `fail:<id>` — the handler meant to
  * salvage the branch — failed six more times on the same dead stub. The Subtask
- * never reached a terminal row, `deliver` was never reached, and the gateway got
+ * never reached a terminal row, `deliver` was never reached, and the gatekeeper got
  * no callback at all. Not a failure message. Silence.
  *
  * Resolving per step body costs a namespace lookup and an object allocation, and
@@ -551,7 +551,7 @@ async function runBranch(
 }
 
 /**
- * Persist the terminal Task, then notify the gateway. A null `reply` delivers a
+ * Persist the terminal Task, then notify the gatekeeper. A null `reply` delivers a
  * `failed` Task with the policy's user-safe text; the diagnostic is already
  * logged. Given a `failure`, the host's {@link HandleTaskDeps.failureCopy} may
  * replace that text — same delivery, different words.

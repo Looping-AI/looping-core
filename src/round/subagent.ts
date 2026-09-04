@@ -68,7 +68,7 @@ export abstract class RecipeSubagentHost<
 
   /**
    * Which provider this facet's chunks run on. Mirrors
-   * {@link file://../host/agent.ts LoopingAgent.modelRuntime}, and **must be
+   * {@link file://../host/agent.ts DynamicAgent.modelRuntime}, and **must be
    * overridden to match it** — a facet that keeps the Workers AI default while
    * its parent runs on another provider would silently execute every subtask on
    * a different model than the round that delegated it.

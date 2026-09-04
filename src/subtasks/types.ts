@@ -21,7 +21,7 @@ export interface SubtaskReference {
 /**
  * One part of a Subtask's result. Text-only today; file/data kinds are additive
  * later. Internal to the agent — the terminal A2A Task collapses these to a
- * single text reply for the gateway/human.
+ * single text reply for the gatekeeper/human.
  */
 export interface SubtaskResultPart {
   kind: "text";
@@ -72,7 +72,7 @@ export function runtimeAs<T>(runtime: SubtaskRuntime): T {
 /**
  * A user-facing progress note a tool emits mid-execution (e.g. a game level-up).
  * The resumable runner collects these and ends the current chunk so the parent
- * DO can post them promptly; `key` is a stable dedupe id the gateway keys on.
+ * DO can post them promptly; `key` is a stable dedupe id the gatekeeper keys on.
  */
 export interface ProgressEvent {
   key: string;

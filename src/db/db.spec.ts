@@ -77,7 +77,7 @@ describe("migrations", () => {
 });
 
 describe("tasks", () => {
-  it("is idempotent on the gateway's messageId, not the task id", async () => {
+  it("is idempotent on the gatekeeper's messageId, not the task id", async () => {
     // The dedupe key is stable across dispatch retries; accepting a turn twice
     // must return the same task rather than minting a second one.
     const { first, second, listed } = await withDb("dedupe", async (db) => {

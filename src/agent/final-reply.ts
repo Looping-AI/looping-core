@@ -59,7 +59,7 @@ export const finalReplyInputSchema = z.object({
  * `@ai-sdk/provider-utils` — an internal of `ai`, which resolves it as a nested
  * copy. Left inferred, `tsc` emits `import("@ai-sdk/provider-utils").Context`
  * into this module's `.d.ts`, so every consumer typechecking
- * `@loopingai/core/agent` needs a package this one does not declare and cannot
+ * `@dynamicagents/core/agent` needs a package this one does not declare and cannot
  * usefully declare: pinning it here installs a *second*, different major
  * alongside `ai`'s own, and TypeScript then refuses the reference outright as
  * unportable.

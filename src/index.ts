@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core` — the mandatory foundation for a Looping agent.
+ * `@dynamicagents/core` — the mandatory foundation for a Dynamic Agents agent.
  *
  * This root entry carries only what nearly every consumer touches: the plugin
  * contract, the config shape, the runtime factory, and the platform facts.
@@ -65,7 +65,7 @@ export {
 } from "./config.js";
 
 export {
-  parseGatewayOrigins,
+  parseGatekeeperOrigins,
   type A2ASecretsEnv,
   type AiEnv,
   type CoreEnv

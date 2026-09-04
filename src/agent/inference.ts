@@ -21,7 +21,7 @@ import { CredentialRejectedError } from "./errors.js";
  * before the final reply. Used to stream those messages out live; the final reply
  * is the operation's return value, not an `onContent` call. `stepIndex` is the
  * 0-based step ordinal (stable enough across a primary→fallback re-run for the
- * gateway to dedupe on). Best-effort — the caller must swallow its own failures.
+ * gatekeeper to dedupe on). Best-effort — the caller must swallow its own failures.
  */
 export type OnContent = (
   text: string,
@@ -91,9 +91,9 @@ export function isTransientAiError(err: unknown): boolean {
  * different remedies and the host cannot tell them apart afterwards:
  *
  * - `credential` — the model provider rejected the token. Rotate that one.
- * - `gateway-credential` — the gateway *in front of* the provider rejected the
- *   request, which the provider therefore never saw. Rotate the gateway's token
- *   instead; the model credential is very likely fine.
+ * - `gateway-credential` — the AI Gateway *in front of* the provider rejected the
+ *   request, which the provider therefore never saw. Rotate the AI Gateway token
+ *   (`cf-aig-authorization`) instead; the model credential is very likely fine.
  * - `unknown-credential` — a `401`/`403` matching none of the shapes. Says so,
  *   rather than picking one and sending an operator to rotate a working secret.
  *
@@ -167,7 +167,7 @@ function isIntermediateStep(step: { finishReason: FinishReason }): boolean {
  * Fires `onContent` for each intermediate step (text that accompanies tool
  * calls); the final step is skipped because its text is the operation's return
  * value. A fresh handler per attempt resets the 0-based `stepIndex` counter so a
- * primary→fallback re-run reuses the same indices and the gateway dedupes.
+ * primary→fallback re-run reuses the same indices and the gatekeeper dedupes.
  *
  * `terminalToolNames` are the loop's **halting** control tools (e.g. the main
  * agent's `delegate`): a step that calls one still has `finishReason:"tool-calls"`,

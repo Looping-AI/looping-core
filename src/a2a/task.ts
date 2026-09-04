@@ -95,7 +95,7 @@ void _assertWidens;
  * A task state rendered for humans and for the `notify_tasks.state` column
  * (`TASK_STATE_INPUT_REQUIRED` → `input-required`). v1.0 states are numeric enum
  * members, so anything stored or displayed goes through the protobuf JSON name
- * first. Matches looping-gateway's `taskStateLabel`.
+ * first. Matches slack-gatekeeper's `taskStateLabel`.
  */
 export function taskStateLabel(state: TaskState): string {
   return taskStateToJSON(state)

@@ -6,7 +6,7 @@ import {
   type ListTasksResponse,
   type Task
 } from "@a2a-js/sdk";
-import type { GatewayIdentity } from "./verify.js";
+import type { GatekeeperIdentity } from "./verify.js";
 import type { AgentResolver } from "./agent-stub.js";
 
 /**
@@ -28,7 +28,7 @@ import type { AgentResolver } from "./agent-stub.js";
  */
 export class DurableTaskStore implements TaskStore {
   constructor(
-    private readonly identity: GatewayIdentity,
+    private readonly identity: GatekeeperIdentity,
     private readonly resolveAgent: AgentResolver
   ) {}
 

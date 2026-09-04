@@ -55,6 +55,6 @@ export interface PluginHost<TEnv extends object = object> {
   //
   // `aiGatewayId` stays because it is not a model — it is the correlation slug a
   // plugin's *own* calls (an embedding, a classifier) must share with the
-  // agent's so one gateway log ties them together. Those are different jobs, on
+  // agent's so one AI Gateway log ties them together. Those are different jobs, on
   // deliberately different models, chosen by the plugin that owns the job.
 }

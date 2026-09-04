@@ -1,5 +1,5 @@
 /**
- * `@loopingai/core/testing/fixtures` — the **realm-neutral** slice of the
+ * `@dynamicagents/core/testing/fixtures` — the **realm-neutral** slice of the
  * harness: fixed keys, origins, and task/message builders.
  *
  * Its own subpath because it is the one part a consumer's `vitest.config.ts`
@@ -13,10 +13,10 @@
  *
  * ```ts
  * // vitest.config.ts
- * import { GATEWAY_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "@loopingai/core/testing/fixtures";
+ * import { GATEKEEPER_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "@dynamicagents/core/testing/fixtures";
  *
  * process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
- * process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
+ * process.env.GATEKEEPER_ORIGINS ??= JSON.stringify([GATEKEEPER_ORIGIN]);
  * ```
  */
 import { type JWK } from "jose";
@@ -40,8 +40,8 @@ export const TEST_MODELS = {
   fallbackChatModelId: "test:fallback"
 } as const;
 
-/** The gateway origin used in all tests. Must match vitest.config.ts and the MockAgent setup. */
-export const GATEWAY_ORIGIN = "https://gateway.test";
+/** The gatekeeper origin used in all tests. Must match vitest.config.ts and the MockAgent setup. */
+export const GATEKEEPER_ORIGIN = "https://gatekeeper.test";
 
 /** Agent origin matching `url.origin` for requests to `http://localhost`. */
 export const AGENT_ORIGIN = "http://localhost";
@@ -55,18 +55,18 @@ export const TEST_AGENT_PRIVATE_JWK: JWK & { kid: string } = {
   kid: "test-agent-key-1"
 };
 
-/** Fixed Ed25519 private JWK for signing gateway JWTs in tests. */
-export const TEST_GATEWAY_PRIVATE_JWK: JWK & { kid: string } = {
+/** Fixed Ed25519 private JWK for signing gatekeeper JWTs in tests. */
+export const TEST_GATEKEEPER_PRIVATE_JWK: JWK & { kid: string } = {
   crv: "Ed25519",
   d: "OVKcn3LDH-qybNIdUbr7T9wbmlxNk2maU4_nILbaLKY",
   x: "jYiAbquXL6db7RihLvp2nsp1ShAolDI0tGOjuwsZVnI",
   kty: "OKP",
-  kid: "test-gw-key-1"
+  kid: "test-gk-key-1"
 };
 
-/** Public JWKS the gateway would serve at its `jku` (the private key minus `d`). */
-export function gatewayPublicJwks(): string {
-  const { d: _d, ...pub } = TEST_GATEWAY_PRIVATE_JWK;
+/** Public JWKS the gatekeeper would serve at its `jku` (the private key minus `d`). */
+export function gatekeeperPublicJwks(): string {
+  const { d: _d, ...pub } = TEST_GATEKEEPER_PRIVATE_JWK;
   return JSON.stringify({ keys: [{ ...pub, use: "sig", alg: "EdDSA" }] });
 }
 

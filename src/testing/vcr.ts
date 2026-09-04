@@ -49,7 +49,7 @@ import {
  *    and have no filesystem, so an in-band `fetch` is the only way to say which
  *    cassette the current test is using. See `setupRecording` (vcr-spec.ts).
  *  - **A {@link VcrOptions.handlers} host** — a consumer-supplied stub, for
- *    things that are fixtures rather than recordings (a gateway JWKS).
+ *    things that are fixtures rather than recordings (a gatekeeper JWKS).
  *  - **An {@link VcrOptions.allowNetworkHosts} host** — the real network, always.
  *  - **Anything else, cassette active** — recorded or replayed against it.
  *  - **Anything else, no cassette** — blocked. A test that was never wired for
@@ -86,7 +86,7 @@ export interface VcrOptions {
    * false → replay, and no request ever leaves the machine.
    */
   record: boolean;
-  /** Hosts answered by a stub instead of a cassette (e.g. a gateway JWKS). */
+  /** Hosts answered by a stub instead of a cassette (e.g. a gatekeeper JWKS). */
   handlers?: Record<
     string,
     (request: VcrRequest) => Response | Promise<Response>
@@ -355,7 +355,7 @@ class Recorder {
  *
  * export default defineConfig({
  *   plugins: [cloudflareTest({ miniflare: { outboundService: vcr.outboundService } })],
- *   test: { globalSetup: ["@loopingai/core/testing/vcr-global-setup"] }
+ *   test: { globalSetup: ["@dynamicagents/core/testing/vcr-global-setup"] }
  * });
  * ```
  */

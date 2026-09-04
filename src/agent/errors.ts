@@ -36,7 +36,7 @@
  * is how to check each" is worse copy and better information.
  *
  * A third arm, `"proxy"`, named an optional intermediary between the two — the
- * shape where a deployment terminates the gateway's request at its own Worker to
+ * shape where a deployment terminates the AI Gateway request at its own Worker to
  * attach a credential. It was removed in 0.8.0 with the deployment that had one.
  * If you build that topology again, the honest classification for its refusals
  * is `"unknown"` until you widen this union, because the remedy genuinely

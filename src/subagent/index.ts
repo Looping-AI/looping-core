@@ -53,7 +53,7 @@ export interface SubagentRuntime {
    * Build the durable file store over this facet's own SQLite.
    *
    * Supplied by the host because the backend is a plugin's: core declares the
-   * {@link WorkspaceBacking} shape and the caps, `@loopingai/plugins/workspace`
+   * {@link WorkspaceBacking} shape and the caps, `@dynamicagents/plugins/workspace`
    * supplies the `@cloudflare/shell` implementation, and an agent that never
    * delegates file work installs neither.
    */
@@ -210,7 +210,7 @@ export abstract class RecipeSubagentBase<
 
   /**
    * The same, for a caller that cannot proceed without it — a facet that signs
-   * its own caller tokens, above all. Mirrors `LoopingAgent.requireSelfOrigin`,
+   * its own caller tokens, above all. Mirrors `DynamicAgent.requireSelfOrigin`,
    * because a facet must run on the same provider, and so the same credential
    * path, as the parent that delegated to it.
    */

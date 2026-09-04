@@ -5,7 +5,7 @@ import {
   IDENTITY_CLAIM,
   TENANT_CLAIM,
   jwksUrl
-} from "@loopingai/a2a-protocol";
+} from "@dynamicagents/g2a-protocol";
 import { signCallerToken } from "./caller-token.js";
 import { AGENT_ORIGIN, TEST_AGENT_PRIVATE_JWK } from "../testing/fixtures.js";
 
@@ -13,7 +13,7 @@ const options = {
   signingKey: JSON.stringify(TEST_AGENT_PRIVATE_JWK),
   issuer: AGENT_ORIGIN,
   audience: "https://service.example.com",
-  identity: { key: "looping:coder:x", name: "Coder", kind: "agent" },
+  identity: { key: "da:coder:x", name: "Coder", kind: "agent" },
   tenant: "coder"
 };
 

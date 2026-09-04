@@ -1,18 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { importJWK, SignJWT } from "jose";
 import {
-  GatewayAuthError,
+  GatekeeperAuthError,
   IDENTITY_CLAIM,
   bearerToken,
-  normalizeGatewayOrigins,
-  verifyGatewayToken
+  normalizeGatekeeperOrigins,
+  verifyGatekeeperToken
 } from "./verify.js";
-import { makeGatewayToken } from "../testing/auth.js";
+import { makeGatekeeperToken } from "../testing/auth.js";
 import {
   AGENT_ORIGIN,
-  GATEWAY_ORIGIN,
-  TEST_GATEWAY_PRIVATE_JWK,
-  gatewayPublicJwks
+  GATEKEEPER_ORIGIN,
+  TEST_GATEKEEPER_PRIVATE_JWK,
+  gatekeeperPublicJwks
 } from "../testing/fixtures.js";
 
 /**
@@ -27,11 +27,11 @@ import {
  * to land — which is the point.
  */
 
-const JWKS_URL = `${GATEWAY_ORIGIN}/.well-known/jwks.json`;
-const ALLOWED = [GATEWAY_ORIGIN];
+const JWKS_URL = `${GATEKEEPER_ORIGIN}/.well-known/jwks.json`;
+const ALLOWED = [GATEKEEPER_ORIGIN];
 
 /**
- * What a gateway mints for an agent at the default RPC path: the agent's
+ * What a gatekeeper mints for an agent at the default RPC path: the agent's
  * **endpoint**, not its origin. Every token here carries it — including the ones
  * built by hand to test some *other* rejection, so that each of those still
  * fails for the reason it names rather than tripping the audience check first.
@@ -39,7 +39,7 @@ const ALLOWED = [GATEWAY_ORIGIN];
 const AGENT_AUDIENCE = `${AGENT_ORIGIN}/a2a`;
 
 /**
- * `createRemoteJWKSet` fetches the gateway's public keys over the network. Serve
+ * `createRemoteJWKSet` fetches the gatekeeper's public keys over the network. Serve
  * them from a stub so the specs are hermetic — and so `jwksFetches` can prove the
  * allowlist check happens *before* the fetch, not after.
  */
@@ -50,7 +50,7 @@ beforeAll(() => {
     const url = typeof input === "string" ? input : input.toString();
     jwksFetches.push(url);
     if (url === JWKS_URL) {
-      return new Response(gatewayPublicJwks(), {
+      return new Response(gatekeeperPublicJwks(), {
         headers: { "content-type": "application/json" }
       });
     }
@@ -62,16 +62,16 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-describe("verifyGatewayToken", () => {
-  it("accepts a well-formed gateway token and returns the caller identity", async () => {
-    const token = await makeGatewayToken();
+describe("verifyGatekeeperToken", () => {
+  it("accepts a well-formed gatekeeper token and returns the caller identity", async () => {
+    const token = await makeGatekeeperToken();
 
-    const { payload, identity } = await verifyGatewayToken(token, {
+    const { payload, identity } = await verifyGatekeeperToken(token, {
       allowedOrigins: ALLOWED,
       audience: AGENT_AUDIENCE
     });
 
-    expect(payload.iss).toBe(GATEWAY_ORIGIN);
+    expect(payload.iss).toBe(GATEKEEPER_ORIGIN);
     expect(payload.aud).toBe(AGENT_AUDIENCE);
     // `key` is the only field anything downstream depends on.
     expect(identity.key).toBe("custom:1:test-agent");
@@ -79,18 +79,21 @@ describe("verifyGatewayToken", () => {
   });
 
   it("rejects a token with no jku header (RFC 7515 §4.1.2)", async () => {
-    const privateKey = await importJWK(TEST_GATEWAY_PRIVATE_JWK, "EdDSA");
+    const privateKey = await importJWK(TEST_GATEKEEPER_PRIVATE_JWK, "EdDSA");
     const token = await new SignJWT({ [IDENTITY_CLAIM]: { key: "k" } })
       // No `jku` — the agent has nowhere to fetch keys from, and must not
       // fall back to a configured default.
-      .setProtectedHeader({ alg: "EdDSA", kid: TEST_GATEWAY_PRIVATE_JWK.kid })
-      .setIssuer(GATEWAY_ORIGIN)
+      .setProtectedHeader({
+        alg: "EdDSA",
+        kid: TEST_GATEKEEPER_PRIVATE_JWK.kid
+      })
+      .setIssuer(GATEKEEPER_ORIGIN)
       .setAudience(AGENT_AUDIENCE)
       .setExpirationTime("5m")
       .sign(privateKey);
 
     await expect(
-      verifyGatewayToken(token, {
+      verifyGatekeeperToken(token, {
         allowedOrigins: ALLOWED,
         audience: AGENT_AUDIENCE
       })
@@ -100,15 +103,15 @@ describe("verifyGatewayToken", () => {
   it("rejects a jku origin outside the allowlist without fetching it", async () => {
     // The key-injection attack: a valid signature over attacker-chosen keys.
     // Allowing an unlisted origin here would make the whole scheme decorative.
-    const token = await makeGatewayToken();
+    const token = await makeGatekeeperToken();
     jwksFetches = [];
 
     await expect(
-      verifyGatewayToken(token, {
-        allowedOrigins: ["https://not-the-gateway.test"],
+      verifyGatekeeperToken(token, {
+        allowedOrigins: ["https://not-the-gatekeeper.test"],
         audience: AGENT_AUDIENCE
       })
-    ).rejects.toThrow(/not in the allowed gateway origins/i);
+    ).rejects.toThrow(/not in the allowed gatekeeper origins/i);
 
     // Order matters as much as the check: validate, *then* fetch.
     expect(jwksFetches).toEqual([]);
@@ -116,12 +119,12 @@ describe("verifyGatewayToken", () => {
 
   it("rejects when iss origin does not match jku origin", async () => {
     // Both origins are allowlisted, so this is the check that stops one listed
-    // gateway from minting tokens that appear to come from another.
-    const token = await makeGatewayToken({ issuer: "https://evil.test" });
+    // gatekeeper from minting tokens that appear to come from another.
+    const token = await makeGatekeeperToken({ issuer: "https://evil.test" });
 
     await expect(
-      verifyGatewayToken(token, {
-        allowedOrigins: [GATEWAY_ORIGIN, "https://evil.test"],
+      verifyGatekeeperToken(token, {
+        allowedOrigins: [GATEKEEPER_ORIGIN, "https://evil.test"],
         audience: AGENT_AUDIENCE
       })
     ).rejects.toThrow(/does not match iss origin/i);
@@ -131,69 +134,69 @@ describe("verifyGatewayToken", () => {
     const token = await new SignJWT({ [IDENTITY_CLAIM]: { key: "k" } })
       .setProtectedHeader({
         alg: "HS256",
-        kid: TEST_GATEWAY_PRIVATE_JWK.kid,
+        kid: TEST_GATEKEEPER_PRIVATE_JWK.kid,
         jku: JWKS_URL
       })
-      .setIssuer(GATEWAY_ORIGIN)
+      .setIssuer(GATEKEEPER_ORIGIN)
       .setAudience(AGENT_AUDIENCE)
       .setExpirationTime("5m")
       .sign(new Uint8Array(32));
 
     await expect(
-      verifyGatewayToken(token, {
+      verifyGatekeeperToken(token, {
         allowedOrigins: ALLOWED,
         audience: AGENT_AUDIENCE
       })
-    ).rejects.toThrow(GatewayAuthError);
+    ).rejects.toThrow(GatekeeperAuthError);
   });
 
   it("rejects an expired token", async () => {
-    const token = await makeGatewayToken({ expiresIn: "-1m" });
+    const token = await makeGatekeeperToken({ expiresIn: "-1m" });
 
     await expect(
-      verifyGatewayToken(token, {
+      verifyGatekeeperToken(token, {
         allowedOrigins: ALLOWED,
         audience: AGENT_AUDIENCE
       })
-    ).rejects.toThrow(GatewayAuthError);
+    ).rejects.toThrow(GatekeeperAuthError);
   });
 
   it("rejects a token whose signature has been tampered with", async () => {
-    const token = await makeGatewayToken();
+    const token = await makeGatekeeperToken();
     const [header, body, sig] = token.split(".");
     const flipped = sig[0] === "A" ? `B${sig.slice(1)}` : `A${sig.slice(1)}`;
 
     await expect(
-      verifyGatewayToken(`${header}.${body}.${flipped}`, {
+      verifyGatekeeperToken(`${header}.${body}.${flipped}`, {
         allowedOrigins: ALLOWED,
         audience: AGENT_AUDIENCE
       })
-    ).rejects.toThrow(GatewayAuthError);
+    ).rejects.toThrow(GatekeeperAuthError);
   });
 
   it("rejects a token minted for a different audience", async () => {
-    const token = await makeGatewayToken({
+    const token = await makeGatekeeperToken({
       audience: "https://elsewhere.test"
     });
 
     await expect(
-      verifyGatewayToken(token, {
+      verifyGatekeeperToken(token, {
         allowedOrigins: ALLOWED,
         audience: AGENT_AUDIENCE
       })
-    ).rejects.toThrow(GatewayAuthError);
+    ).rejects.toThrow(GatekeeperAuthError);
   });
 
   it("reads the identity from a configured non-default claim", async () => {
-    // The claim is configurable for deployments not behind looping-gateway;
+    // The claim is configurable for deployments not behind slack-gatekeeper;
     // the *checks* above are not.
     const claim = "https://example.test/identity";
-    const token = await makeGatewayToken({
+    const token = await makeGatekeeperToken({
       identityClaim: claim,
       identity: { key: "custom:9:other" }
     });
 
-    const { identity } = await verifyGatewayToken(token, {
+    const { identity } = await verifyGatekeeperToken(token, {
       allowedOrigins: ALLOWED,
       audience: AGENT_AUDIENCE,
       identityClaim: claim
@@ -205,11 +208,11 @@ describe("verifyGatewayToken", () => {
   it("yields an empty identity when the claim is absent, rather than throwing", async () => {
     // Downstream rejects a caller with no `key`; verification itself stays a
     // pure signature/origin question.
-    const token = await makeGatewayToken({
+    const token = await makeGatekeeperToken({
       identityClaim: "https://example.test/somewhere-else"
     });
 
-    const { identity } = await verifyGatewayToken(token, {
+    const { identity } = await verifyGatekeeperToken(token, {
       allowedOrigins: ALLOWED,
       audience: AGENT_AUDIENCE
     });
@@ -218,30 +221,32 @@ describe("verifyGatewayToken", () => {
   });
 });
 
-describe("normalizeGatewayOrigins", () => {
+describe("normalizeGatekeeperOrigins", () => {
   it("accepts a bare hostname, an http URL, and a trailing slash alike", () => {
     expect(
-      normalizeGatewayOrigins([
-        "gateway.test",
-        "http://gateway.test",
-        "https://gateway.test/"
+      normalizeGatekeeperOrigins([
+        "gatekeeper.test",
+        "http://gatekeeper.test",
+        "https://gatekeeper.test/"
       ])
-    ).toEqual([GATEWAY_ORIGIN, GATEWAY_ORIGIN, GATEWAY_ORIGIN]);
+    ).toEqual([GATEKEEPER_ORIGIN, GATEKEEPER_ORIGIN, GATEKEEPER_ORIGIN]);
   });
 
   it("keeps the allowlist exact rather than matching by suffix", () => {
-    // `evil-gateway.test` must never satisfy an allowlist entry of
-    // `gateway.test`; normalization is to an origin, not to a pattern.
-    const [normalized] = normalizeGatewayOrigins(["gateway.test"]);
-    expect(normalized).not.toBe("https://evil-gateway.test");
-    expect(normalizeGatewayOrigins(["evil-gateway.test"])).toEqual([
-      "https://evil-gateway.test"
+    // `evil-gatekeeper.test` must never satisfy an allowlist entry of
+    // `gatekeeper.test`; normalization is to an origin, not to a pattern.
+    const [normalized] = normalizeGatekeeperOrigins(["gatekeeper.test"]);
+    expect(normalized).not.toBe("https://evil-gatekeeper.test");
+    expect(normalizeGatekeeperOrigins(["evil-gatekeeper.test"])).toEqual([
+      "https://evil-gatekeeper.test"
     ]);
   });
 
   it("rejects an empty or unparseable origin loudly", () => {
-    expect(() => normalizeGatewayOrigins([""])).toThrow(GatewayAuthError);
-    expect(() => normalizeGatewayOrigins(["   "])).toThrow(GatewayAuthError);
+    expect(() => normalizeGatekeeperOrigins([""])).toThrow(GatekeeperAuthError);
+    expect(() => normalizeGatekeeperOrigins(["   "])).toThrow(
+      GatekeeperAuthError
+    );
   });
 });
 
